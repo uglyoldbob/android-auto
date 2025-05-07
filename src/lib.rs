@@ -372,6 +372,9 @@ impl AndroidAutoFrameReceiver {
     ) -> Result<AndroidAutoFrame, std::io::Error> {
         loop {
             if self.len.is_none() {
+                if dump {
+                    log::error!("Packet frame header is {:?}", header.frame);
+                }
                 if header.frame.get_frame_type() == FrameHeaderType::First {
                     let mut p = [0u8; 6];
                     stream.read_exact(&mut p).await.inspect_err(|e| log::error!("Failure reading 6 byte frame length: {}", e))?;
