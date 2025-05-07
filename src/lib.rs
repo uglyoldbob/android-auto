@@ -379,6 +379,10 @@ impl AndroidAutoFrameReceiver {
         loop {
             if self.len.is_none() {
                 if header.frame.get_frame_type() == FrameHeaderType::First {
+                    if let Some(b) = self.biglen {
+                        log::error!("There are already {} bytes when receiving a first frame", b);
+                        return Err(std::io::Error::other("First frame again before end frame"));
+                    }
                     match stream.read(&mut self.buf[self.index..]).await {
                         Ok(asdf) => {
                             self.index += asdf;
@@ -466,6 +470,7 @@ impl AndroidAutoFrameReceiver {
                             return Err(std::io::Error::other("Failure in big packet length"));
                         }
                         self.rx_sofar.clear();
+                        self.biglen.take();
                         Some(d)
                     } else {
                         None
