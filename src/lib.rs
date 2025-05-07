@@ -368,12 +368,12 @@ impl AndroidAutoFrameReceiver {
             if self.len.is_none() {
                 if header.frame.get_frame_type() == FrameHeaderType::First {
                     let mut p = [0u8; 6];
-                    stream.read_exact(&mut p).await?;
+                    stream.read_exact(&mut p).await.inspect_err(|e| log::error!("Failure reading 6 byte frame length: {}", e))?;
                     let len = u16::from_be_bytes([p[0], p[1]]);
                     self.len.replace(len);
                 } else {
                     let mut p = [0u8; 2];
-                    stream.read_exact(&mut p).await?;
+                    stream.read_exact(&mut p).await.inspect_err(|e| log::error!("Failure reading 2 byte frame length: {}", e))?;
                     let len = u16::from_be_bytes(p);
                     self.len.replace(len);
                 }
