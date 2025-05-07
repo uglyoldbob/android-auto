@@ -1434,6 +1434,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> StreamMux<T> {
             } else {
                 None
             };
+            if let Some(f) = f2 {
+                return Ok(f);
+            }
         }
     }
 
