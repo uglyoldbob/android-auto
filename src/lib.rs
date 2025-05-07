@@ -44,7 +44,7 @@ pub trait AndroidAutoVideoChannelTrait: AndroidAutoMainTrait {
     /// Parse a chunk of h264 video data
     async fn receive_video(&mut self, data: Vec<u8>, timestamp: Option<u64>);
     /// Setup the video device to receive h264 video, if anything is required. Return Ok(()) if setup was good, Err(()) if it was not good
-    async fn setup_video(&mut self) -> Result<(),()>;
+    async fn setup_video(&mut self) -> Result<(), ()>;
     /// Tear down the video receiver, may be called without the setup having been called
     async fn teardown_video(&mut self);
     /// Wait for the video to be in focus
@@ -220,7 +220,10 @@ struct FrameHeaderReader {
 
 impl FrameHeaderReader {
     /// Read the rest of the frame header
-    async fn read(&mut self, stream: &mut tokio::net::TcpStream) -> Result<FrameHeader, std::io::Error> {
+    async fn read(
+        &mut self,
+        stream: &mut tokio::net::TcpStream,
+    ) -> Result<FrameHeader, std::io::Error> {
         let mut b = [0u8];
         stream.read_exact(&mut b).await?;
         let mut a = FrameHeaderContents::new(false, FrameHeaderType::Single, false);
@@ -234,13 +237,12 @@ impl FrameHeaderReader {
 }
 
 /// Responsible for receiving frame headers in the the android auto protocol.
-struct FrameHeaderReceiver {
-}
+struct FrameHeaderReceiver {}
 
 impl FrameHeaderReceiver {
     /// Construct a new self
     pub fn new() -> Self {
-        Self { }
+        Self {}
     }
 
     /// Read a frame header from the compatible android auto device
@@ -378,9 +380,9 @@ impl AndroidAutoFrameReceiver {
             }
 
             let decrypt = |ssl_stream: &mut rustls::client::ClientConnection,
-                        _len: u16,
-                        data_frame: Vec<u8>|
-            -> Result<Vec<u8>, std::io::Error> {
+                           _len: u16,
+                           data_frame: Vec<u8>|
+             -> Result<Vec<u8>, std::io::Error> {
                 let mut plain_data = vec![0u8; data_frame.len()];
                 let mut cursor = Cursor::new(&data_frame);
                 let mut index = 0;
@@ -1514,7 +1516,7 @@ impl AndriodAutoBluettothServer {
                 Some(mut a) => a.recv().await,
                 None => loop {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                }
+                },
             }
         };
         tokio::pin!(message_fut);
@@ -1601,11 +1603,11 @@ impl AndriodAutoBluettothServer {
                 Some(m) = &mut message_fut => {
                     let f: AndroidAutoFrame = m.into();
                     let d2: Vec<u8> = f.build_vec(Some(&mut ssl_client)).await;
-                    stream.write_all(&d2).await.map_err(|e| e.to_string())?;
+                    stream.write_all(&d2).await.map_err(|e| format!("Failure receiving frame header: {}", e))?;
                 }
                 Ok(mut p) = fr.read(&mut stream) => {
-                    let fh = p.read(&mut stream).await.map_err(|e| e.to_string())?;
-                    let frame : AndroidAutoFrame = fr2.read(&fh, &mut stream, &mut ssl_client).await.map_err(|e| e.to_string())?;
+                    let fh = p.read(&mut stream).await.map_err(|e| format!("Failure receiving frame: {}", e))?;
+                    let frame : AndroidAutoFrame = fr2.read(&fh, &mut stream, &mut ssl_client).await.map_err(|e| format!("Failure parsing frame: {}", e))?;
                     if let Some(handler) = channel_handlers.get_mut(frame.header.channel_id as usize) {
                         handler
                             .receive_data(
@@ -1617,7 +1619,7 @@ impl AndriodAutoBluettothServer {
                                 main,
                             )
                             .await
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|e| format!("Failure processing frame: {}", e))?;
                     } else {
                         panic!("Unknown channel id: {:?}", frame.header.channel_id);
                     }

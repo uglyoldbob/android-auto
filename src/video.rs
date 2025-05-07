@@ -65,9 +65,12 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     log::info!("Got channel open request for video: {:?}", m);
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     if let Some(v) = main.supports_video() {
-                        m2.set_status(if v.setup_video().await.is_ok() { Wifi::status::Enum::OK } else { Wifi::status::Enum::FAIL });
-                    }
-                    else {
+                        m2.set_status(if v.setup_video().await.is_ok() {
+                            Wifi::status::Enum::OK
+                        } else {
+                            Wifi::status::Enum::FAIL
+                        });
+                    } else {
                         m2.set_status(Wifi::status::Enum::FAIL);
                     }
                     let d: AndroidAutoFrame =
@@ -117,7 +120,8 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                 AvChannelMessage::VideoFocusRequest(_chan, m) => {
                     if let Some(v) = main.supports_video() {
                         let mut m2 = Wifi::VideoFocusIndication::new();
-                        v.set_focus(m.focus_mode() == Wifi::video_focus_mode::Enum::FOCUSED).await;
+                        v.set_focus(m.focus_mode() == Wifi::video_focus_mode::Enum::FOCUSED)
+                            .await;
                         m2.set_focus_mode(m.focus_mode());
                         m2.set_unrequested(false);
                         let d: AndroidAutoFrame =
@@ -127,8 +131,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     }
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
-                AvChannelMessage::StartIndication(_chan, _) => {
-                }
+                AvChannelMessage::StartIndication(_chan, _) => {}
             }
             return Ok(());
         }
