@@ -141,6 +141,8 @@ pub struct AndroidAutoConfiguration {
     pub bluetooth: BluetoothInformation,
     /// The head unit information
     pub unit: HeadUnitInfo,
+    /// Dump all received packets to the log
+    pub dump_rx_packets: bool,
 }
 
 /// The channel identifier for channels in the android auto protocol
@@ -363,6 +365,7 @@ impl AndroidAutoFrameReceiver {
         header: &FrameHeader,
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
+        dump: bool,
     ) -> Result<AndroidAutoFrame, std::io::Error> {
         loop {
             if self.len.is_none() {
@@ -404,6 +407,9 @@ impl AndroidAutoFrameReceiver {
             if let Some(len) = self.len.take() {
                 let mut data_frame = vec![0u8; len as usize];
                 stream.read_exact(&mut data_frame).await?;
+                if dump {
+                    log::error!("Read encrypted? data {:02x?}", data_frame);
+                }
                 let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
                     let data_plain = if header.frame.get_encryption() {
                         decrypt(ssl_stream, len, data_frame)?
@@ -1607,7 +1613,7 @@ impl AndriodAutoBluettothServer {
                 }
                 Ok(mut p) = fr.read(&mut stream) => {
                     let fh = p.read(&mut stream).await.map_err(|e| format!("Failure receiving frame: {}", e))?;
-                    let frame : AndroidAutoFrame = fr2.read(&fh, &mut stream, &mut ssl_client).await.map_err(|e| format!("Failure parsing frame: {}", e))?;
+                    let frame : AndroidAutoFrame = fr2.read(&fh, &mut stream, &mut ssl_client, config.dump_rx_packets).await.map_err(|e| format!("Failure parsing frame: {}", e))?;
                     if let Some(handler) = channel_handlers.get_mut(frame.header.channel_id as usize) {
                         handler
                             .receive_data(
