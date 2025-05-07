@@ -373,7 +373,7 @@ impl AndroidAutoFrameReceiver {
                     let mut p = [0u8; 6];
                     stream.read_exact(&mut p).await.inspect_err(|e| log::error!("Failure reading 6 byte frame length: {}", e))?;
                     let len = u16::from_be_bytes([p[0], p[1]]);
-                    let totallen = u16::from_be_bytes([p[2], p[3]]);
+                    let totallen = u32::from_be_bytes([p[2], p[3], p[4], p[5]]);
                     if dump {
                         log::error!("Total length should be {:x}", totallen);
                     }
