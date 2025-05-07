@@ -1,3 +1,8 @@
+//! This crate provides android auto functionality for devices wishing to comunicate using the android auto protocol.
+
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
 use std::{
     io::{Cursor, Read, Write},
     sync::Arc,
@@ -22,19 +27,23 @@ use bluetooth::*;
 mod sensor;
 use sensor::*;
 
+/// The base trait for crate users to implement
 pub trait AndroidAutoMainTrait {
+    /// This allows the incoming video stream to be processed
     #[inline(always)]
     fn supports_video(&mut self) -> Option<&mut dyn AndroidAutoVideoChannelTrait> {
         None
     }
 }
 
+/// This trait is implemented by users wishing to display a video stream from an android auto (phone probably).
 #[async_trait::async_trait]
 pub trait AndroidAutoVideoChannelTrait: AndroidAutoMainTrait {
+    /// Parse a chunk of h264 video data
     async fn receive_video(&mut self, data: Vec<u8>);
-    async fn test(&mut self) {}
 }
 
+/// This is the bluetooth server for initiating wireless android auto on compatible devices.
 pub struct AndriodAutoBluettothServer {
     #[cfg(feature = "wireless")]
     blue: bluetooth_rust::RfcommProfileHandle,
@@ -50,41 +59,67 @@ struct AndroidAutoMessage {
     message: Vec<u8>,
 }
 
+/// The wireless network information to relay to the compatible android auto device
 #[derive(Clone)]
 pub struct NetworkInformation {
+    /// The ssid of the wireless network
     pub ssid: String,
+    /// The password for the wireless network
     pub psk: String,
+    /// Unsure, probably the mac address of the android auto host
     pub mac_addr: String,
+    /// The ip address of the android auto host
     pub ip: String,
+    /// The port that the android auto host should listen on
     pub port: u16,
+    /// The security mode for the wireless network
     pub security_mode: Bluetooth::SecurityMode,
+    /// The access point type of the wireless network
     pub ap_type: Bluetooth::AccessPointType,
 }
 
+/// Information about the head unit that will be providing android auto services for compatible devices
 #[derive(Clone)]
 pub struct HeadUnitInfo {
+    /// The name of the head unit
     pub name: String,
+    /// The model of the vehicle
     pub car_model: String,
+    /// The year of the vehicle
     pub car_year: String,
+    /// The serial number of the vehicle
     pub car_serial: String,
+    /// True when the vehicle is a left hand drive, false when a right hand drive
     pub left_hand: bool,
+    /// The manufacturer of the head unit
     pub head_manufacturer: String,
+    /// The model of the head unit
     pub head_model: String,
+    /// The software build for the head unit
     pub sw_build: String,
+    /// The software version for the head unit
     pub sw_version: String,
+    /// Does the head unit support native media
     pub native_media: bool,
+    /// Should the clock be hidden?
     pub hide_clock: Option<bool>,
 }
 
+/// The required bluetooth information
 #[derive(Clone)]
 pub struct BluetoothInformation {
+    /// The mac address of the bluetooth adapter
     pub address: String,
 }
 
+/// Provides basic configuration elements for setting up an android auto head unit
 #[derive(Clone)]
 pub struct AndroidAutoConfiguration {
+    /// The wireless network information
     pub network: NetworkInformation,
+    /// The bluetooth information
     pub bluetooth: BluetoothInformation,
+    /// The head unit information
     pub unit: HeadUnitInfo,
 }
 
@@ -139,12 +174,17 @@ impl TryFrom<u8> for ChannelId {
     }
 }
 
+/// Specifies the type of frame header, whether the data of a packet is contained in a single frame, or if it was too large and broken up into multiple frames for transmission.
 #[derive(Debug, PartialEq)]
 #[repr(u8)]
 pub enum FrameHeaderType {
+    /// This frame is neither the first or the last of a multi-frame packet
     Middle = 0,
+    /// This is the first frame of a multi-frame packet
     First = 1,
+    /// This is the last frame of a multi-frame packet
     Last = 2,
+    /// The packet is contained in a single frame
     Single = 3,
 }
 
@@ -165,18 +205,23 @@ impl Into<u8> for FrameHeaderType {
     }
 }
 
-bitfield::bitfield! {
-    #[derive(Copy, Clone)]
-    pub struct FrameHeaderContents(u8);
-    impl Debug;
-    impl new;
-    u8;
-    /// True indicates the frame is encrypted
-    get_encryption, set_encryption: 3;
-    from into FrameHeaderType, get_frame_type, set_frame_type: 1, 0;
-    /// True when frame is for control, false when specific
-    get_control, set_control: 2;
+#[allow(missing_docs)]
+mod frame_header {
+    bitfield::bitfield! {
+        #[derive(Copy, Clone)]
+        pub struct FrameHeaderContents(u8);
+        impl Debug;
+        impl new;
+        u8;
+        /// True indicates the frame is encrypted
+        pub get_encryption, set_encryption: 3;
+        /// The frame header type
+        pub from into super::FrameHeaderType, get_frame_type, set_frame_type: 1, 0;
+        /// True when frame is for control, false when specific
+        pub get_control, set_control: 2;
+    }
 }
+use frame_header::FrameHeaderContents;
 
 /// Represents the header of a frame sent to the android auto client
 #[derive(Copy, Clone, Debug)]
@@ -1569,13 +1614,14 @@ enum ChannelHandler {
 }
 
 impl AndriodAutoBluettothServer {
+    /// Create a new android auto bluetooth server, registering the profile required for android auto wireless operation.
     #[cfg(feature = "wireless")]
-    pub async fn new(bluetooth: &mut bluetooth_rust::BluetoothHandler) -> Self {
+    pub async fn new(bluetooth: &mut bluetooth_rust::BluetoothHandler) -> Option<Self> {
         let profile = bluetooth_rust::RfcommProfile {
             uuid: bluetooth_rust::Uuid::parse_str(
                 bluetooth_rust::BluetoothUuid::AndroidAuto.as_str(),
             )
-            .unwrap(),
+            .ok()?,
             name: Some("Android Auto Bluetooth Service".to_string()),
             service: bluetooth_rust::Uuid::parse_str(
                 bluetooth_rust::BluetoothUuid::AndroidAuto.as_str(),
@@ -1593,11 +1639,12 @@ impl AndriodAutoBluettothServer {
             ..Default::default()
         };
         let a = bluetooth.register_rfcomm_profile(profile).await;
-        Self { blue: a.unwrap() }
+        Some(Self { blue: a.ok()? })
     }
 
+    /// Start a listener that listens for connections on the android auto provile
     #[cfg(feature = "wireless")]
-    pub async fn bluetooth_listen(&mut self, network: NetworkInformation) -> Result<(), String> {
+    pub async fn bluetooth_listen(&mut self, network: NetworkInformation) -> ! {
         use futures::StreamExt;
         use protobuf::Message;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1884,6 +1931,8 @@ impl AndriodAutoBluettothServer {
         Ok(())
     }
 
+    /// Listen for connections over the network for an android auto capable head unit.
+    /// This will return an error if it was unable to listen on the specified port
     #[cfg(feature = "wireless")]
     pub async fn wifi_listen<T: AndroidAutoMainTrait>(
         config: AndroidAutoConfiguration,
