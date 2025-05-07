@@ -342,7 +342,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                 AndroidAutoControlMessage::ServiceDiscoveryRequest(_m) => {
                     let mut m2 = Wifi::ServiceDiscoveryResponse::new();
                     m2.set_car_model(config.unit.car_model.clone());
-                    m2.set_can_play_native_media_during_vr(false);
+                    m2.set_can_play_native_media_during_vr(config.unit.native_media);
                     m2.set_car_serial(config.unit.car_serial.clone());
                     m2.set_car_year(config.unit.car_year.clone());
                     m2.set_head_unit_name(config.unit.name.clone());
@@ -359,34 +359,6 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         m2.channels.push(s.clone());
                     }
 
-                    let m3data = [
-                        0x0au8, 0x0f, 0x08, 0x07, 0x2a, 0x0b, 0x08, 0x01, 0x12, 0x07, 0x08, 0x80,
-                        0x7d, 0x10, 0x10, 0x18, 0x01, 0x0a, 0x14, 0x08, 0x04, 0x1a, 0x10, 0x08,
-                        0x01, 0x10, 0x03, 0x1a, 0x08, 0x08, 0x80, 0xf7, 0x02, 0x10, 0x10, 0x18,
-                        0x02, 0x28, 0x01, 0x0a, 0x13, 0x08, 0x05, 0x1a, 0x0f, 0x08, 0x01, 0x10,
-                        0x01, 0x1a, 0x07, 0x08, 0x80, 0x7d, 0x10, 0x10, 0x18, 0x01, 0x28, 0x01,
-                        0x0a, 0x13, 0x08, 0x06, 0x1a, 0x0f, 0x08, 0x01, 0x10, 0x02, 0x1a, 0x07,
-                        0x08, 0x80, 0x7d, 0x10, 0x10, 0x18, 0x01, 0x28, 0x01, 0x0a, 0x0c, 0x08,
-                        0x02, 0x12, 0x08, 0x0a, 0x02, 0x08, 0x0d, 0x0a, 0x02, 0x08, 0x0a, 0x0a,
-                        0x14, 0x08, 0x03, 0x1a, 0x10, 0x08, 0x03, 0x22, 0x0a, 0x08, 0x01, 0x10,
-                        0x02, 0x18, 0x00, 0x20, 0x00, 0x28, 0x6f, 0x28, 0x01, 0x0a, 0x19, 0x08,
-                        0x08, 0x32, 0x15, 0x0a, 0x11, 0x30, 0x30, 0x3a, 0x39, 0x33, 0x3a, 0x33,
-                        0x37, 0x3a, 0x45, 0x46, 0x3a, 0x42, 0x37, 0x3a, 0x35, 0x37, 0x10, 0x04,
-                        0x0a, 0x16, 0x08, 0x09, 0x42, 0x12, 0x08, 0xe8, 0x07, 0x10, 0x01, 0x1a,
-                        0x0b, 0x08, 0x80, 0x02, 0x10, 0x80, 0x02, 0x18, 0x10, 0x20, 0xff, 0x01,
-                        0x0a, 0x04, 0x08, 0x0a, 0x4a, 0x00, 0x0a, 0x0c, 0x08, 0x01, 0x22, 0x08,
-                        0x12, 0x06, 0x08, 0x80, 0x0f, 0x10, 0xb8, 0x08, 0x12, 0x08, 0x4f, 0x70,
-                        0x65, 0x6e, 0x41, 0x75, 0x74, 0x6f, 0x1a, 0x09, 0x55, 0x6e, 0x69, 0x76,
-                        0x65, 0x72, 0x73, 0x61, 0x6c, 0x22, 0x04, 0x32, 0x30, 0x31, 0x38, 0x2a,
-                        0x08, 0x32, 0x30, 0x31, 0x38, 0x30, 0x33, 0x30, 0x31, 0x30, 0x01, 0x3a,
-                        0x03, 0x66, 0x31, 0x78, 0x42, 0x10, 0x4f, 0x70, 0x65, 0x6e, 0x41, 0x75,
-                        0x74, 0x6f, 0x20, 0x41, 0x75, 0x74, 0x6f, 0x61, 0x70, 0x70, 0x4a, 0x01,
-                        0x31, 0x52, 0x03, 0x31, 0x2e, 0x30, 0x58, 0x00, 0x60, 0x00,
-                    ];
-                    let m3 = Wifi::ServiceDiscoveryResponse::parse_from_bytes(&m3data);
-                    log::error!("Golden service response is {:?}", m3);
-                    log::error!("Our service response is {:?}", m2);
-
                     let m3 = AndroidAutoControlMessage::ServiceDiscoveryResponse(m2);
                     let d: AndroidAutoFrame = m3.into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
@@ -394,40 +366,19 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                 }
                 AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
                 AndroidAutoControlMessage::SslHandshake(data) => {
-                    log::info!("SSL Handshake data is {:x?}", data);
-                    log::error!(
-                        "SSL WANTS RX {} TX {}",
-                        ssl_stream.wants_read(),
-                        ssl_stream.wants_write()
-                    );
                     if ssl_stream.wants_read() {
                         let mut dc = std::io::Cursor::new(data);
-                        let asdf = ssl_stream.read_tls(&mut dc);
-                        log::error!("SSL Client process received handshake is {:?}", asdf);
-                        let asdg = ssl_stream.process_new_packets();
-                        log::error!("Process new packets from SSL: {:?}", asdg);
+                        let _ = ssl_stream.read_tls(&mut dc);
+                        let _ = ssl_stream.process_new_packets();
                     }
-                    log::error!(
-                        "SSL WANTS RX {} TX {}",
-                        ssl_stream.wants_read(),
-                        ssl_stream.wants_write()
-                    );
-                    log::error!("ssl handshaking {}", ssl_stream.is_handshaking());
                     if ssl_stream.wants_write() {
                         let mut s = Vec::new();
                         let l = ssl_stream.write_tls(&mut s);
-                        if let Ok(l) = l {
-                            log::debug!("Got buffer length {} to send for ssl stuff {:x?}", l, s);
+                        if l.is_ok() {
                             let m = AndroidAutoControlMessage::SslHandshake(s);
                             let d: AndroidAutoFrame = m.into();
                             let d2: Vec<u8> = d.build_vec(None).await;
                             stream.write_all(&d2).await?;
-                            log::error!(
-                                "ssl handshaking {} RX {} TX {}",
-                                ssl_stream.is_handshaking(),
-                                ssl_stream.wants_read(),
-                                ssl_stream.wants_write()
-                            );
                         }
                     }
                     if !ssl_stream.is_handshaking() {
@@ -451,8 +402,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                     let mut s = Vec::new();
                     if ssl_stream.wants_write() {
                         let l = ssl_stream.write_tls(&mut s);
-                        if let Ok(l) = l {
-                            log::debug!("Got buffer length {} to send for ssl stuff {:x?}", l, s);
+                        if l.is_ok() {
                             let m = AndroidAutoControlMessage::SslHandshake(s);
                             let d: AndroidAutoFrame = m.into();
                             let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;

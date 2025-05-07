@@ -108,7 +108,7 @@ pub struct HeadUnitInfo {
     pub sw_build: String,
     /// The software version for the head unit
     pub sw_version: String,
-    /// Does the head unit support native media
+    /// Does the head unit support native media during vr
     pub native_media: bool,
     /// Should the clock be hidden?
     pub hide_clock: Option<bool>,
@@ -347,37 +347,34 @@ impl AndroidAutoFrameReceiver {
             }
         }
 
-        let decrypt =
-            |ssl_stream: &mut rustls::client::ClientConnection, len: u16, data_frame: Vec<u8>| {
-                let mut plain_data = vec![0u8; data_frame.len()];
-                let mut cursor = Cursor::new(&data_frame);
-                let mut index = 0;
-                loop {
-                    let asdf = ssl_stream.read_tls(&mut cursor).unwrap();
-                    let state = ssl_stream.process_new_packets();
-                    log::error!("State is {} {} {:?}", asdf, len, state);
-                    if asdf == 0 {
-                        break;
-                    }
-                    if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
-                        index += l;
-                    }
+        let decrypt = |ssl_stream: &mut rustls::client::ClientConnection,
+                       _len: u16,
+                       data_frame: Vec<u8>|
+         -> Result<Vec<u8>, std::io::Error> {
+            let mut plain_data = vec![0u8; data_frame.len()];
+            let mut cursor = Cursor::new(&data_frame);
+            let mut index = 0;
+            loop {
+                let asdf = ssl_stream.read_tls(&mut cursor).unwrap();
+                let _ = ssl_stream
+                    .process_new_packets()
+                    .map_err(|e| std::io::Error::other(e))?;
+                if asdf == 0 {
+                    break;
                 }
-                plain_data[0..index].to_vec()
-            };
+                if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
+                    index += l;
+                }
+            }
+            Ok(plain_data[0..index].to_vec())
+        };
 
         if let Some(len) = self.len.take() {
             let mut data_frame = vec![0u8; len as usize];
-            log::error!(
-                "Receiving frame type {:?} {}, len {}",
-                header.frame.get_frame_type(),
-                header.frame.get_encryption(),
-                len
-            );
             stream.read_exact(&mut data_frame).await?;
             let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
                 let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)
+                    decrypt(ssl_stream, len, data_frame)?
                 } else {
                     data_frame
                 };
@@ -385,7 +382,7 @@ impl AndroidAutoFrameReceiver {
                 Some(vec![d])
             } else {
                 let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)
+                    decrypt(ssl_stream, len, data_frame)?
                 } else {
                     data_frame
                 };
@@ -588,8 +585,7 @@ impl ChannelHandlerTrait for InputChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
-                AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
-                    log::info!("Got channel open request for input: {:?}", m);
+                AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =
@@ -665,8 +661,7 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
-                AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
-                    log::info!("Got channel open request for media audio: {:?}", m);
+                AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =
@@ -684,8 +679,7 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
                 AvChannelMessage::MediaIndication(_, _, _) => {
                     log::error!("Received media data for media audio");
                 }
-                AvChannelMessage::SetupRequest(chan, m) => {
-                    log::info!("Got channel setup request for {:?} audio: {:?}", chan, m);
+                AvChannelMessage::SetupRequest(_chan, _m) => {
                     let mut m2 = Wifi::AVChannelSetupResponse::new();
                     m2.set_max_unacked(10);
                     m2.set_media_status(Wifi::avchannel_setup_status::Enum::OK);
@@ -813,8 +807,7 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
         if let Ok(msg2) = msg3 {
             match msg2 {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
-                AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
-                    log::info!("Got channel open request for media status: {:?}", m);
+                AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =
@@ -890,8 +883,7 @@ impl ChannelHandlerTrait for NavigationChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
-                AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
-                    log::info!("Got channel open request for navigation: {:?}", m);
+                AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =
@@ -967,8 +959,7 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
-                AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
-                    log::info!("Got channel open request for speech audio: {:?}", m);
+                AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =
@@ -986,8 +977,7 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
                 AvChannelMessage::MediaIndication(_, _, _) => {
                     log::error!("Received media data for speech audio");
                 }
-                AvChannelMessage::SetupRequest(chan, m) => {
-                    log::info!("Got channel setup request for {:?} audio: {:?}", chan, m);
+                AvChannelMessage::SetupRequest(_chan, _m) => {
                     let mut m2 = Wifi::AVChannelSetupResponse::new();
                     m2.set_max_unacked(10);
                     m2.set_media_status(Wifi::avchannel_setup_status::Enum::OK);
@@ -1104,11 +1094,6 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
                 Wifi::avchannel_message::Enum::AV_MEDIA_WITH_TIMESTAMP_INDICATION => {
                     let mut b = [0u8; 8];
                     b.copy_from_slice(&value.data[2..10]);
-                    log::info!(
-                        "Recieved media on channel {:?} size {}",
-                        value.header.channel_id,
-                        value.data[10..].len()
-                    );
                     let ts: u64 = u64::from_be_bytes(b);
                     Ok(Self::MediaIndication(
                         value.header.channel_id,
@@ -1142,7 +1127,6 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
                 Wifi::avchannel_message::Enum::AV_INPUT_OPEN_RESPONSE => todo!(),
                 Wifi::avchannel_message::Enum::VIDEO_FOCUS_REQUEST => {
                     let m = Wifi::VideoFocusRequest::parse_from_bytes(&value.data[2..]);
-                    log::error!("Video focus request {:02x?}", m);
                     match m {
                         Ok(m) => Ok(Self::VideoFocusRequest(value.header.channel_id, m)),
                         Err(e) => Err(format!("Invalid channel open request: {}", e)),
@@ -1197,8 +1181,7 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
-                AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
-                    log::info!("Got channel open request for system audio: {:?}", m);
+                AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =
@@ -1216,8 +1199,7 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
                 AvChannelMessage::MediaIndication(_, _, _) => {
                     log::error!("Received media data for system audio");
                 }
-                AvChannelMessage::SetupRequest(chan, m) => {
-                    log::info!("Got channel setup request for {:?} audio: {:?}", chan, m);
+                AvChannelMessage::SetupRequest(_chan, _m) => {
                     let mut m2 = Wifi::AVChannelSetupResponse::new();
                     m2.set_max_unacked(10);
                     m2.set_media_status(Wifi::avchannel_setup_status::Enum::OK);
@@ -1285,8 +1267,7 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
-                AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
-                    log::info!("Got channel open request for av input: {:?}", m);
+                AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =
@@ -1514,7 +1495,6 @@ impl AndriodAutoBluettothServer {
                 .expect("Invalid pem cert for aauto client");
             CertificateDer::from_pem(aautocertpem.0, aautocertpem.1).unwrap()
         };
-        log::error!("Cert is {:02x?}", cert);
         let key = {
             let mut br = std::io::Cursor::new(cert::PRIVATE_KEY.to_string().as_bytes().to_vec());
             let aautocertpem = rustls::pki_types::pem::from_buf(&mut br)
@@ -1537,11 +1517,6 @@ impl AndriodAutoBluettothServer {
         let server = "idontknow.com".try_into().unwrap();
         let mut ssl_client =
             rustls::ClientConnection::new(sslconfig, server).expect("Failed to build ssl client");
-        log::error!(
-            "SSL WANTS RX {} TX {}",
-            ssl_client.wants_read(),
-            ssl_client.wants_write()
-        );
 
         let mut channel_handlers: Vec<ChannelHandler> = Vec::new();
         channel_handlers.push(ControlChannelHandler::new().into());
@@ -1682,7 +1657,6 @@ impl AndriodAutoBluettothServer {
             };
             if let Some(f2) = f2 {
                 if let Some(handler) = channel_handlers.get_mut(f2.header.channel_id as usize) {
-                    log::error!("Receiving data for channel {:?}", f2.header.channel_id);
                     handler
                         .receive_data(
                             f2,

@@ -56,7 +56,6 @@ impl TryFrom<&AndroidAutoFrame> for BluetoothMessage {
             match sys {
                 Wifi::bluetooth_channel_message::Enum::PAIRING_REQUEST => {
                     let m = Wifi::BluetoothPairingRequest::parse_from_bytes(&value.data[2..]);
-                    log::error!("Pairing request {:?} {:02x?}", m, &value.data[2..]);
                     match m {
                         Ok(m) => Ok(Self::PairingRequest(value.header.channel_id, m)),
                         Err(e) => Err(e.to_string()),
@@ -126,8 +125,7 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
         if let Ok(msg2) = msg3 {
             match msg2 {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
-                AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
-                    log::info!("Got channel open request for bluetooth: {:?}", m);
+                AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =

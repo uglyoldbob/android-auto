@@ -21,7 +21,6 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoCommonMessage {
         ty.copy_from_slice(&value.data[0..2]);
         let ty = u16::from_be_bytes(ty);
         if value.header.frame.get_control() {
-            log::error!("Control id is {:x?}", ty);
             let w = Wifi::CommonMessage::from_i32(ty as i32);
             if let Some(m) = w {
                 match m {
@@ -51,7 +50,6 @@ impl From<AndroidAutoCommonMessage> for AndroidAutoFrame {
     fn from(value: AndroidAutoCommonMessage) -> Self {
         match value {
             AndroidAutoCommonMessage::ChannelOpenResponse(chan, m) => {
-                log::error!("Channel open response {}", m.is_initialized());
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::CommonMessage::CHANNEL_OPEN_RESPONSE as u16;
                 let t = t.to_be_bytes();

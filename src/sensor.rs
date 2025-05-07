@@ -135,8 +135,6 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                 SensorMessage::Event(_chan, _m) => unimplemented!(),
                 SensorMessage::SensorStartResponse(_, _) => unimplemented!(),
                 SensorMessage::SensorStartRequest(_chan, m) => {
-                    log::error!("Sensor start request {:?}", m);
-
                     let mut m2 = Wifi::SensorStartResponseMessage::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =
@@ -171,8 +169,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
-                AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
-                    log::info!("Got channel open request for sensor: {:?}", m);
+                AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame =
