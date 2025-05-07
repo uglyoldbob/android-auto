@@ -388,9 +388,9 @@ impl AndroidAutoFrameReceiver {
                 let mut index = 0;
                 loop {
                     let asdf = ssl_stream.read_tls(&mut cursor).unwrap();
-                    let _ = ssl_stream
-                        .process_new_packets()
-                        .map_err(|e| std::io::Error::other(e))?;
+                    let _ = ssl_stream.process_new_packets().map_err(|e| {
+                        std::io::Error::other(format!("Failure processing ssl packets: {}", e))
+                    })?;
                     if asdf == 0 {
                         break;
                     }
@@ -1603,7 +1603,7 @@ impl AndriodAutoBluettothServer {
                 Some(m) = &mut message_fut => {
                     let f: AndroidAutoFrame = m.into();
                     let d2: Vec<u8> = f.build_vec(Some(&mut ssl_client)).await;
-                    stream.write_all(&d2).await.map_err(|e| format!("Failure receiving frame header: {}", e))?;
+                    stream.write_all(&d2).await.map_err(|e| format!("Failure writing user response: {}", e))?;
                 }
                 Ok(mut p) = fr.read(&mut stream) => {
                     let fh = p.read(&mut stream).await.map_err(|e| format!("Failure receiving frame: {}", e))?;
