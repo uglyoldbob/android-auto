@@ -54,7 +54,7 @@ pub struct AndriodAutoBluettothServer {
 mod protobufmod {
     include!(concat!(env!("OUT_DIR"), "/protobuf/mod.rs"));
 }
-use protobufmod::*;
+pub use protobufmod::*;
 
 /// The android auto version supported
 const VERSION: (u16, u16) = (1, 1);
