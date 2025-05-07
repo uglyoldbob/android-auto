@@ -373,6 +373,10 @@ impl AndroidAutoFrameReceiver {
                     let mut p = [0u8; 6];
                     stream.read_exact(&mut p).await.inspect_err(|e| log::error!("Failure reading 6 byte frame length: {}", e))?;
                     let len = u16::from_be_bytes([p[0], p[1]]);
+                    let totallen = u16::from_be_bytes([p[2], p[3]]);
+                    if dump {
+                        log::error!("Total length should be {:x}", totallen);
+                    }
                     self.len.replace(len);
                 } else {
                     let mut p = [0u8; 2];
@@ -408,7 +412,7 @@ impl AndroidAutoFrameReceiver {
                 let mut data_frame = vec![0u8; len as usize];
                 stream.read_exact(&mut data_frame).await?;
                 if dump {
-                    log::error!("Read encrypted? data {:02x?}", data_frame);
+                    log::error!("Read encrypted? data {:x} {:x} {:02x?}", self.rx_sofar.len(), len, data_frame);
                 }
                 let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
                     let data_plain = if header.frame.get_encryption() {
