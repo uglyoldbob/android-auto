@@ -40,6 +40,12 @@ pub trait AndroidAutoMainTrait {
 pub trait AndroidAutoVideoChannelTrait: AndroidAutoMainTrait {
     /// Parse a chunk of h264 video data
     async fn receive_video(&mut self, data: Vec<u8>);
+    /// Setup the video device to receive h264 video, if anything is required
+    async fn setup_video(&mut self) -> bool;
+    /// Tear down the video receiver, may be called without the setup having been called
+    async fn teardown_video(&mut self);
+    /// Wait for the video to be in focus
+    async fn wait_for_focus(&mut self);
 }
 
 /// This is the bluetooth server for initiating wireless android auto on compatible devices.
