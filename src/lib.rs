@@ -378,12 +378,7 @@ impl AndroidAutoFrameReceiver {
     ) -> Result<AndroidAutoFrame, std::io::Error> {
         loop {
             if self.len.is_none() {
-                if header.frame.get_frame_type() == FrameHeaderType::First {
-                    if let Some(b) = self.biglen {
-                        log::error!("There are already {} bytes when receiving a first frame", b);
-                        self.biglen.take();
-                        self.rx_sofar.clear();
-                    }
+                if header.frame.get_frame_type() == FrameHeaderType::First || self.biglen.is_some(){
                     match stream.read(&mut self.buf[self.index..]).await {
                         Ok(asdf) => {
                             self.index += asdf;
