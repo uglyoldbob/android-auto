@@ -1,0 +1,23 @@
+[package]
+name = "android-auto"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.88"
+bitfield = "0.19.0"
+bluetooth-rust = { path = "../bluetooth", optional = true }
+enum_dispatch = "0.3.13"
+futures = "0.3.30"
+log = "0.4.27"
+protobuf = "3.7.2"
+rustls = { git = "https://github.com/uglyoldbob/rustls.git", version = "0.23.26", features = ["ring"] }
+tokio = { version = "1.40.0", features = ["full"], optional = true }
+webpki-roots = "0.26.9"
+
+[build-dependencies]
+protobuf-codegen = "3.7.2"
+
+[features]
+default = ["wireless"]
+wireless = ["dep:bluetooth-rust", "dep:tokio"]

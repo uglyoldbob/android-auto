@@ -1,0 +1,740 @@
+syntax = "proto2";
+
+package androidauto.wifi;
+
+message NonspecificMessage 
+{
+    enum Enum 
+    {
+        VERSION_REQUEST = 0x0001;
+    }
+}
+
+enum CommonMessage 
+{
+    CHANNEL_OPEN_REQUEST = 0x0007;
+    CHANNEL_OPEN_RESPONSE = 0x0008;
+}
+
+enum ControlMessage
+{
+    MESSAGE_NONE = 0x0000;
+    VERSION_REQUEST = 0x0001;
+    VERSION_RESPONSE = 0x0002;
+    SSL_HANDSHAKE = 0x0003;
+    AUTH_COMPLETE = 0x0004;
+    SERVICE_DISCOVERY_REQUEST = 0x0005;
+    SERVICE_DISCOVERY_RESPONSE = 0x0006;
+    PING_REQUEST = 0x000b;
+    PING_RESPONSE = 0x000c;
+    NAVIGATION_FOCUS_REQUEST = 0x000d;
+    NAVIGATION_FOCUS_RESPONSE = 0x000e;
+    SHUTDOWN_REQUEST = 0x000f;
+    SHUTDOWN_RESPONSE = 0x0010;
+    VOICE_SESSION_REQUEST = 0x0011;
+    AUDIO_FOCUS_REQUEST = 0x0012;
+    AUDIO_FOCUS_RESPONSE = 0x0013;
+}
+
+message AVChannelMessage
+{
+    enum Enum
+    {
+        AV_MEDIA_WITH_TIMESTAMP_INDICATION = 0x0000;
+        AV_MEDIA_INDICATION = 0x0001;
+        SETUP_REQUEST = 0x8000;
+        START_INDICATION = 0x8001;
+        STOP_INDICATION = 0x8002;
+        SETUP_RESPONSE = 0x8003;
+        AV_MEDIA_ACK_INDICATION = 0x8004;
+        AV_INPUT_OPEN_REQUEST = 0x8005;
+        AV_INPUT_OPEN_RESPONSE = 0x8006;
+        VIDEO_FOCUS_REQUEST = 0x8007;
+        VIDEO_FOCUS_INDICATION = 0x8008;
+    }
+}
+
+message InputChannelMessage
+{
+    enum Enum
+    {
+        NONE = 0x0000;
+        INPUT_EVENT_INDICATION = 0x8001;
+        BINDING_REQUEST = 0x8002;
+        BINDING_RESPONSE = 0x8003;
+    }
+}
+
+
+enum MessageType {
+    SPECIFIC = 0;
+    CONTROL = 4;
+}
+
+enum AuthCompleteIndicationStatus
+{
+    OK = 0;
+    FAIL = 1;
+}
+
+message AuthCompleteIndication
+{
+    required AuthCompleteIndicationStatus status = 1;
+}
+
+message ServiceDiscoveryRequest
+{
+    required string device_name = 4;
+    required string device_brand = 5;
+}
+
+message SensorType
+{
+    enum Enum
+    {
+        NONE = 0;
+        LOCATION = 1;
+        COMPASS = 2;
+        CAR_SPEED = 3;
+        RPM = 4;
+        ODOMETER = 5;
+        FUEL_LEVEL = 6;
+        PARKING_BRAKE = 7;
+        GEAR = 8;
+        DIAGNOSTICS = 9;
+        NIGHT_DATA = 10;
+        ENVIRONMENT = 11;
+        HVAC = 12;
+        DRIVING_STATUS = 13;
+        DEAD_RECONING = 14;
+        PASSENGER = 15;
+        DOOR = 16;
+        LIGHT = 17;
+        TIRE = 18;
+        ACCEL = 19;
+        GYRO = 20;
+        GPS = 21;
+    }
+}
+
+message Sensor
+{
+    required SensorType.Enum type = 1;
+}
+
+message SensorChannel
+{
+    repeated Sensor sensors = 1;
+}
+
+message SensorChannelMessage
+{
+    enum Enum
+    {
+        NONE = 0x0000;
+        SENSOR_START_REQUEST = 0x8001;
+        SENSOR_START_RESPONSE = 0x8002;
+        SENSOR_EVENT_INDICATION = 0x8003;
+    }
+}
+
+message SensorStartRequestMessage
+{
+    required SensorType.Enum sensor_type = 1;
+    required int64 refresh_interval = 2;
+}
+
+message SensorStartResponseMessage
+{
+    required Status.Enum status = 1;
+}
+
+message GPSLocation
+{
+    required uint64 timestamp = 1;
+    required int32 latitude = 2;
+    required int32 longitude = 3;
+    required uint32 accuracy = 4;
+    optional int32 altitude = 5;
+    optional int32 speed = 6;
+    optional int32 bearing = 7;
+}
+
+message Compass
+{
+    required int32 bearing =1;
+    required int32 pitch = 2;
+    required int32 roll = 3;
+}
+
+message Speed
+{
+    required int32 speed = 1;
+    optional bool cruise_engaged = 2;
+    optional bool cruise_set_speed = 3;
+}
+
+message RPM
+{
+    required int32 rpm = 1;
+}
+
+message Odometer
+{
+    required int32 total_mileage = 1;
+    required int32 trip_mileage = 2;
+}
+
+message FuelLevel
+{
+    required int32 fuel_level = 1;
+    required int32 range = 2;
+    required bool low_fuel = 3;
+}
+
+message ParkingBrake
+{
+    required bool parking_brake = 1;
+}
+
+message NightMode
+{
+    required bool is_night = 1;
+}
+
+message Environment
+{
+    required int32 temperature =1;
+    required int32 pressure = 2;
+    required int32 rain = 3;
+}
+
+message HVAC
+{
+    required int32 target_temperature = 1;
+    required int32 current_temperature = 2;
+}
+
+enum DrivingStatusEnum
+{
+    UNRESTRICTED = 0;
+    NO_VIDEO = 1;
+    NO_KEYBOARD_INPUT = 2;
+    NO_VOICE_INPUT = 4;
+    NO_CONFIG = 8;
+    LIMIT_MESSAGE_LEN = 16;
+    FULLY_RESTRICTED = 31;
+}
+
+message DrivingStatus
+{
+    required int32 status = 1;
+}
+
+message SteeringWheel
+{
+    required int32 steering_angle = 1;
+    required int32 wheel_speed = 2;
+}
+
+message Passenger
+{
+    required bool passenger_present = 1;
+}
+
+message Door
+{
+    required bool hood_open = 1;
+    required bool boot_open = 2;
+    repeated bool door_open = 3;
+}
+
+message Light
+{
+    required HeadlightStatus.Enum headlight = 1;
+    required IndicatorStatus.Enum indicator = 2;
+    required bool hazard_light_on = 3;
+}
+
+message Accel
+{
+    required int32 acceleration_x = 1;
+    required int32 acceleration_y = 2;
+    required int32 acceleration_z = 3;
+}
+
+message Gyro
+{
+    required int32 rotation_speed_x = 1;
+    required int32 rotation_speed_y = 2;
+    required int32 rotation_speed_z = 3;
+}
+
+message HeadlightStatus
+{
+    enum Enum
+    {
+        STATE_0 = 0;
+        STATE_1 = 1;
+        STATE_2 = 2;
+        STATE_3 = 3;
+    }
+}
+
+message IndicatorStatus
+{
+    enum Enum
+    {
+        STATE_0 = 0;
+        STATE_1 = 1;
+        STATE_2 = 2;
+        STATE_3 = 3;
+    }
+}
+
+message Diagnostics
+{
+    required bytes diagnostics = 1;
+}
+
+message Gear
+{
+    enum Enum
+    {
+        NEUTRAL = 0;
+        FIRST = 1;
+        SECOND = 2;
+        THIRD = 3;
+        FOURTH = 4;
+        FIFTH = 5;
+        SIXTH = 6;
+        SEVENTH = 7;
+        EIGHTH = 8;
+        NINTH = 9;
+        TENTH = 10;
+        DRIVE = 100;
+        PARK = 101;
+        REVERSE = 102;
+    }
+    required Gear.Enum gear = 1;
+}
+
+message SensorEventIndication
+{
+    repeated GPSLocation gps_location = 1;
+    repeated Compass compass = 2;
+    repeated Speed speed = 3;
+    repeated RPM rpm = 4;
+    repeated Odometer odometer = 5;
+    repeated FuelLevel fuel_level = 6;
+    repeated ParkingBrake parking_brake = 7;
+    repeated Gear gear = 8;
+    repeated Diagnostics diagnostics = 9;
+    repeated NightMode night_mode = 10;
+    repeated Environment environment = 11;
+    repeated HVAC hvac = 12;
+    repeated DrivingStatus driving_status = 13;
+    repeated SteeringWheel steering_wheel = 14;
+    repeated Passenger passenger = 15;
+    repeated Door door = 16;
+    repeated Light light = 17;
+    repeated Accel accel = 19;
+    repeated Gyro gyro = 20;
+}
+
+message AVStreamType
+{
+    enum Enum
+    {
+        NONE = 0;
+        AUDIO = 1;
+        VIDEO = 3;
+    }
+}
+
+message AudioType
+{
+    enum Enum
+    {
+        NONE = 0;
+        SPEECH = 1;
+        SYSTEM = 2;
+        MEDIA = 3;
+        ALARM = 4;
+    }
+}
+
+message AudioConfig
+{
+    required uint32 sample_rate = 1;
+    required uint32 bit_depth = 2;
+    required uint32 channel_count = 3;
+}
+
+message VideoResolution
+{
+    enum Enum
+    {
+        NONE = 0;
+        _480p = 1;
+        _720p = 2;
+       _1080p = 3;
+       _1440p = 4;
+       _720p_p = 5;
+       _1080pp = 6;
+       _108s0p_p = 7;
+    }
+}
+
+message VideoFPS
+{
+    enum Enum
+    {
+        NONE = 0;
+        _30 = 1;
+        _60 = 2;
+    }
+}
+
+message VideoConfig
+{
+    required VideoResolution.Enum video_resolution = 1;
+    required VideoFPS.Enum video_fps = 2;
+    required uint32 margin_width = 3;
+    required uint32 margin_height = 4;
+    required uint32 dpi = 5;
+    optional uint32 additional_depth = 6;
+}
+
+message AVChannel
+{
+    required AVStreamType.Enum stream_type = 1;
+    optional AudioType.Enum audio_type = 2;
+    repeated AudioConfig audio_configs = 3;
+    repeated VideoConfig video_configs = 4;
+    optional bool available_while_in_call = 5;
+}
+
+message TouchConfig
+{
+    required uint32 width = 1;
+    required uint32 height = 2;
+}
+
+message InputChannel
+{
+    repeated uint32 supported_keycodes = 1;
+    optional TouchConfig touch_screen_config = 2;
+    optional TouchConfig touch_pad_config = 3;
+}
+
+message AVInputChannel
+{
+    required AVStreamType.Enum stream_type = 1;
+    required AudioConfig audio_config = 2;
+    optional bool available_while_in_call = 3;
+}
+
+message BluetoothPairingMethod
+{
+    enum Enum
+    {
+        NONE = 0;
+        UNK_1 = 1;
+        A2DP = 2;
+        UNK_3 = 3;
+        HFP = 4;
+    }
+}
+
+message BluetoothChannel
+{
+    required string adapter_address = 1;
+    repeated BluetoothPairingMethod.Enum supported_pairing_methods = 2;
+}
+
+message NavigationTurnType
+{
+    enum Enum
+    {
+        UNKNOWN = 0;
+        IMAGE = 1;
+        ENUM = 2;
+    }
+}
+
+message NavigationImageOptions
+{
+    required int32 width = 1;
+    required int32 height = 2;
+    required int32 colour_depth_bits = 3;
+    required int32 dunno = 4;
+}
+
+message NavigationChannel
+{
+    required uint32 minimum_interval_ms = 1;
+    required NavigationTurnType.Enum type = 2;
+    required NavigationImageOptions image_options = 3;
+}
+
+message MediaInfoChannel
+{
+   
+}
+
+message VendorExtensionChannel
+{
+    required string name = 1;
+    repeated string package_white_list = 2;
+    optional bytes data = 3;
+}
+
+message WifiChannel
+{
+    required string ssid = 1;
+}
+
+message ChannelDescriptor
+{
+    required uint32 channel_id = 1;
+    optional SensorChannel sensor_channel = 2;
+    optional AVChannel av_channel = 3;
+    optional InputChannel input_channel = 4;
+    optional AVInputChannel av_input_channel = 5;
+    optional BluetoothChannel bluetooth_channel = 6;
+    optional NavigationChannel navigation_channel = 8;
+    optional MediaInfoChannel media_infoChannel = 9;
+    optional VendorExtensionChannel vendor_extension_channel = 12;
+    optional WifiChannel wifi_channel=16;
+}
+
+message ServiceDiscoveryResponse
+{
+    repeated ChannelDescriptor channels = 1;
+    required string head_unit_name = 2;
+    required string car_model = 3;
+    required string car_year = 4;
+    required string car_serial = 5;
+    required bool left_hand_drive_vehicle = 6;
+    required string headunit_manufacturer = 7;
+    required string headunit_model = 8;
+    required string sw_build = 9;
+    required string sw_version = 10;
+    required bool can_play_native_media_during_vr = 11;
+    optional bool hide_clock = 12;
+}
+
+message AudioFocusType
+{
+    enum Enum
+    {
+        NONE = 0;
+        GAIN = 1;
+        GAIN_TRANSIENT = 2;
+        GAIN_NAVI = 3;
+        RELEASE = 4;
+    }
+}
+
+message AudioFocusRequest
+{
+    required AudioFocusType.Enum audio_focus_type = 1;
+}
+
+message AudioFocusState
+{
+    enum Enum
+    {
+        NONE = 0;
+        GAIN = 1;
+        GAIN_TRANSIENT = 2;
+        LOSS = 3;
+        LOSS_TRANSIENT_CAN_DUCK = 4;
+        LOSS_TRANSIENT = 5;
+        GAIN_MEDIA_ONLY = 6;
+        GAIN_TRANSIENT_GUIDANCE_ONLY = 7;
+    }
+}
+
+message AudioFocusResponse
+{
+    required AudioFocusState.Enum audio_focus_state = 1;
+}
+
+message ChannelOpenRequest
+{
+    required int32 priority = 1;
+    required int32 channel_id = 2;
+}
+
+message Status
+{
+    enum Enum
+    {
+        OK = 0;
+        FAIL = 1;
+    }
+}
+
+message ChannelOpenResponse
+{
+    required Status.Enum status = 1;
+}
+
+message PingRequest
+{
+    required int64 timestamp = 1;
+}
+
+message PingResponse
+{
+    required int64 timestamp = 1;
+}
+
+message AVChannelSetupRequest
+{
+    required uint32 config_index = 1;
+}
+
+message AVChannelSetupStatus
+{
+    enum Enum
+    {
+        NONE = 0;
+        FAIL = 1;
+        OK = 2;
+    }
+}
+
+message AVChannelSetupResponse
+{
+    required AVChannelSetupStatus.Enum media_status = 1;
+    required uint32 max_unacked = 2;
+    repeated uint32 configs = 3;
+}
+
+message BindingRequest
+{
+    repeated int32 scan_codes = 1;
+}
+
+message BindingResponse
+{
+    required Status.Enum status = 1;
+}
+
+message VideoFocusMode
+{
+    enum Enum
+    {
+        NONE = 0;
+        FOCUSED = 1;
+        UNFOCUSED = 2;
+    }
+}
+
+message VideoFocusReason
+{
+    enum Enum
+    {
+        NONE = 0;
+        UNK_1 = 1;
+        UNK_2 = 2;
+    }
+}
+
+message VideoFocusRequest
+{
+    optional int32 disp_index = 1;
+    required VideoFocusMode.Enum focus_mode = 2;
+    required VideoFocusReason.Enum focus_reason = 3;
+}
+
+message VideoFocusIndication
+{
+    required VideoFocusMode.Enum focus_mode = 1;
+    required bool unrequested = 2;
+}
+
+message AVChannelStartIndication
+{
+    required int32 session = 1;
+    required uint32 config = 2;
+}
+
+message MediaInfoChannelMessage
+{
+   enum Enum
+    {
+        NONE = 0x0000;
+        PLAYBACK = 0x8001;
+        METADATA = 0x8003;
+    }
+}
+
+message MediaInfoChannelPlaybackData
+{
+    enum PlaybackState
+    {
+        NONE = 0x0000;
+        TRACK_CHANGE = 1;
+        PLAY = 2;
+        PAUSE = 3;
+    }
+    required PlaybackState playback_state = 1;
+    required string media_source = 2;
+    required int32 track_progress = 3;
+    required int32 unknown1 = 4;
+    required int32 unknown2 = 5;
+    required int32 unknown3 = 6;
+}
+
+message MediaInfoChannelMetadataData
+{
+   required string track_name = 1;
+   optional string artist_name = 2;
+   optional string album_name = 3;
+   optional bytes album_art = 4;
+   required int32 track_length = 6;
+   required int32 unknown1 = 7;
+}
+
+message BluetoothChannelMessage
+{
+    enum Enum
+    {
+        NONE = 0x0000;
+        PAIRING_REQUEST = 0x8001;
+        PAIRING_RESPONSE = 0x8002;
+        AUTH_DATA = 0x8003;
+    }
+}
+
+message BluetoothPairingRequest
+{
+    required string phone_address = 1;
+    required BluetoothPairingMethod.Enum pairing_method = 2;
+}
+
+message BluetoothPairingStatus
+{
+    enum Enum
+    {
+        NONE = 0;
+        OK = 1;
+        FAIL = 2;
+    }
+}
+
+message BluetoothPairingResponse
+{
+    required bool already_paired = 1;
+    required BluetoothPairingStatus.Enum status = 2;
+}
+
+message AVMediaAckIndication
+{
+    required int32 session = 1;
+    required uint32 value = 2;
+}
