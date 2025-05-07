@@ -65,7 +65,6 @@ message InputChannelMessage
     }
 }
 
-
 enum MessageType {
     SPECIFIC = 0;
     CONTROL = 4;
@@ -737,4 +736,75 @@ message AVMediaAckIndication
 {
     required int32 session = 1;
     required uint32 value = 2;
+}
+
+message TouchAction
+{
+    enum Enum
+    {
+        PRESS = 0;
+        RELEASE = 1;
+        DRAG = 2;
+        POINTER_DOWN = 5;
+        POINTER_UP = 6;
+    }
+}
+
+message AbsoluteInputEvent
+{
+    required uint32 scan_code = 1;
+    required int32 value = 2;
+}
+
+message AbsoluteInputEvents
+{
+    repeated AbsoluteInputEvent absolute_input_events = 1;
+}
+
+message RelativeInputEvent
+{
+    required uint32 scan_code = 1;
+    required int32 delta = 2;
+}
+
+message RelativeInputEvents
+{
+    repeated RelativeInputEvent relative_input_events = 1;
+}
+
+message ButtonEvent
+{
+    required uint32 scan_code = 1;
+    required bool is_pressed = 2;
+    optional uint32 meta = 3;
+    optional bool long_press = 4;
+}
+
+message ButtonEvents
+{
+    repeated ButtonEvent button_events = 1;
+}
+
+message TouchLocation
+{
+    required uint32 x = 1;
+    required uint32 y = 2;
+    required uint32 pointer_id = 3;
+}
+
+message TouchEvent
+{
+    repeated TouchLocation touch_location = 1;
+    optional uint32 action_index = 2;
+    required TouchAction.Enum touch_action = 3;
+}
+
+message InputEventIndication
+{
+    required uint64 timestamp = 1;
+    optional int32 disp_channel = 2;
+    optional TouchEvent touch_event = 3;
+    optional ButtonEvents button_event = 4;
+    optional AbsoluteInputEvents absolute_input_event = 5;
+    optional RelativeInputEvents relative_input_event = 6;
 }

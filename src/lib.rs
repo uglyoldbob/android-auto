@@ -507,6 +507,8 @@ enum InputMessage {
     BindingRequest(ChannelId, Wifi::BindingRequest),
     /// A message that responds to a binding request, indicating success or failure of the request
     BindingResponse(ChannelId, Wifi::BindingResponse),
+    /// A message that conveys input data from the user
+    InputEvent(ChannelId, Wifi::InputEventIndication),
 }
 
 impl From<InputMessage> for AndroidAutoFrame {
@@ -516,6 +518,22 @@ impl From<InputMessage> for AndroidAutoFrame {
             InputMessage::BindingResponse(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::input_channel_message::Enum::BINDING_RESPONSE as u16;
+                let t = t.to_be_bytes();
+                let mut m = Vec::new();
+                m.push(t[0]);
+                m.push(t[1]);
+                m.append(&mut data);
+                AndroidAutoFrame {
+                    header: FrameHeader {
+                        channel_id: chan,
+                        frame: FrameHeaderContents::new(true, FrameHeaderType::Single, false),
+                    },
+                    data: m,
+                }
+            }
+            InputMessage::InputEvent(chan, m) => {
+                let mut data = m.write_to_bytes().unwrap();
+                let t = Wifi::input_channel_message::Enum::INPUT_EVENT_INDICATION as u16;
                 let t = t.to_be_bytes();
                 let mut m = Vec::new();
                 m.push(t[0]);
@@ -602,6 +620,7 @@ impl ChannelHandlerTrait for InputChannelHandler {
                     stream.write_frame(&d2).await?;
                 }
                 InputMessage::BindingResponse(_, _) => unimplemented!(),
+                InputMessage::InputEvent(_, _) => unimplemented!(),
             }
             return Ok(());
         }
