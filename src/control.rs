@@ -1,20 +1,41 @@
-use super::VERSION;
-use super::{AndroidAutoFrame, ChannelId, FrameHeader, FrameHeaderContents, FrameHeaderType};
-use crate::Wifi;
-use protobuf::{Enum, Message};
+//! Code for the control channel
 
+use super::VERSION;
+use super::{AndroidAutoFrame, FrameHeader, FrameHeaderContents, FrameHeaderType};
+use crate::{AndroidAutoConfiguration, AndroidAutoMainTrait, ChannelHandlerTrait, ChannelId, Wifi};
+use protobuf::{Enum, Message};
+use tokio::io::AsyncWriteExt;
+
+/// A control message on the android auto protocol
 #[cfg(feature = "wireless")]
 #[derive(Debug)]
 pub enum AndroidAutoControlMessage {
+    /// A message requesting version information.
     VersionRequest,
-    VersionResponse { major: u16, minor: u16, status: u16 },
+    /// A message containing version of the compatible android auto device and compatibility status
+    VersionResponse {
+        /// The major version
+        major: u16,
+        /// The minor version
+        minor: u16,
+        /// The status of the version compatibility, 0xffff indicates incompatibility
+        status: u16,
+    },
+    /// A message containing ssl handshake data
     SslHandshake(Vec<u8>),
+    /// A message indicating that the ssl authentication is complete
     SslAuthComplete(bool),
+    /// A request to discover all channels in operation on the head unit
     ServiceDiscoveryRequest(Wifi::ServiceDiscoveryRequest),
+    /// A response to the service discovery request
     ServiceDiscoveryResponse(Wifi::ServiceDiscoveryResponse),
+    /// A request to set the audio focus
     AudioFocusRequest(Wifi::AudioFocusRequest),
+    /// A response to an audio focus request
     AudioFocusResponse(Wifi::AudioFocusResponse),
+    /// A request for ping
     PingRequest(Wifi::PingRequest),
+    /// A response to a ping response
     PingResponse(Wifi::PingResponse),
 }
 
@@ -37,7 +58,7 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
                         let m = Wifi::PingRequest::parse_from_bytes(&value.data[2..]);
                         match m {
                             Ok(m) => Ok(AndroidAutoControlMessage::PingRequest(m)),
-                            Err(e) => Err(format!("Invalid ping request: {}", e.to_string())),
+                            Err(e) => Err(format!("Invalid ping request: {}", e)),
                         }
                     }
                     Wifi::ControlMessage::NAVIGATION_FOCUS_REQUEST => unimplemented!(),
@@ -50,16 +71,14 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
                         let m = Wifi::PingResponse::parse_from_bytes(&value.data[2..]);
                         match m {
                             Ok(m) => Ok(AndroidAutoControlMessage::PingResponse(m)),
-                            Err(e) => Err(format!("Invalid ping response: {}", e.to_string())),
+                            Err(e) => Err(format!("Invalid ping response: {}", e)),
                         }
                     }
                     Wifi::ControlMessage::AUDIO_FOCUS_REQUEST => {
                         let m = Wifi::AudioFocusRequest::parse_from_bytes(&value.data[2..]);
                         match m {
                             Ok(m) => Ok(AndroidAutoControlMessage::AudioFocusRequest(m)),
-                            Err(e) => {
-                                Err(format!("Invalid audio focus request: {}", e.to_string()))
-                            }
+                            Err(e) => Err(format!("Invalid audio focus request: {}", e)),
                         }
                     }
                     Wifi::ControlMessage::VERSION_RESPONSE => {
@@ -83,10 +102,7 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
                         let m = Wifi::ServiceDiscoveryRequest::parse_from_bytes(&value.data[2..]);
                         match m {
                             Ok(m) => Ok(AndroidAutoControlMessage::ServiceDiscoveryRequest(m)),
-                            Err(e) => Err(format!(
-                                "Invalid service discovery request: {}",
-                                e.to_string()
-                            )),
+                            Err(e) => Err(format!("Invalid service discovery request: {}", e)),
                         }
                     }
                 }
@@ -116,7 +132,7 @@ impl Into<AndroidAutoFrame> for AndroidAutoControlMessage {
                 m.append(&mut data);
                 AndroidAutoFrame {
                     header: FrameHeader {
-                        channel_id: ChannelId::CONTROL,
+                        channel_id: 0,
                         frame: FrameHeaderContents::new(false, FrameHeaderType::Single, false),
                     },
                     data: m,
@@ -132,7 +148,7 @@ impl Into<AndroidAutoFrame> for AndroidAutoControlMessage {
                 m.append(&mut data);
                 AndroidAutoFrame {
                     header: FrameHeader {
-                        channel_id: ChannelId::CONTROL,
+                        channel_id: 0,
                         frame: FrameHeaderContents::new(false, FrameHeaderType::Single, false),
                     },
                     data: m,
@@ -148,7 +164,7 @@ impl Into<AndroidAutoFrame> for AndroidAutoControlMessage {
                 m.append(&mut data);
                 AndroidAutoFrame {
                     header: FrameHeader {
-                        channel_id: ChannelId::CONTROL,
+                        channel_id: 0,
                         frame: FrameHeaderContents::new(true, FrameHeaderType::Single, false),
                     },
                     data: m,
@@ -165,7 +181,7 @@ impl Into<AndroidAutoFrame> for AndroidAutoControlMessage {
                 m.append(&mut data);
                 AndroidAutoFrame {
                     header: FrameHeader {
-                        channel_id: ChannelId::CONTROL,
+                        channel_id: 0,
                         frame: FrameHeaderContents::new(true, FrameHeaderType::Single, false),
                     },
                     data: m,
@@ -185,7 +201,7 @@ impl Into<AndroidAutoFrame> for AndroidAutoControlMessage {
                 m.push(minor[1]);
                 AndroidAutoFrame {
                     header: FrameHeader {
-                        channel_id: ChannelId::CONTROL,
+                        channel_id: 0,
                         frame: FrameHeaderContents::new(false, FrameHeaderType::Single, false),
                     },
                     data: m,
@@ -200,7 +216,7 @@ impl Into<AndroidAutoFrame> for AndroidAutoControlMessage {
                 m.append(&mut data);
                 AndroidAutoFrame {
                     header: FrameHeader {
-                        channel_id: ChannelId::CONTROL,
+                        channel_id: 0,
                         frame: FrameHeaderContents::new(false, FrameHeaderType::Single, false),
                     },
                     data: m,
@@ -223,7 +239,7 @@ impl Into<AndroidAutoFrame> for AndroidAutoControlMessage {
                 m.append(&mut data);
                 AndroidAutoFrame {
                     header: FrameHeader {
-                        channel_id: ChannelId::CONTROL,
+                        channel_id: 0,
                         frame: FrameHeaderContents::new(false, FrameHeaderType::Single, false),
                     },
                     data: m,
@@ -238,5 +254,216 @@ impl Into<AndroidAutoFrame> for AndroidAutoControlMessage {
                 unimplemented!();
             }
         }
+    }
+}
+
+/// Handles the control channel of the android auto protocol
+pub struct ControlChannelHandler {
+    /// The list of all channels for the head unit. This is filled out after the control channel is created
+    channels: Vec<Wifi::ChannelDescriptor>,
+}
+
+impl ControlChannelHandler {
+    /// Construct a new self
+    pub fn new() -> Self {
+        Self {
+            channels: Vec::new(),
+        }
+    }
+}
+
+impl ChannelHandlerTrait for ControlChannelHandler {
+    fn set_channels(&mut self, chans: Vec<Wifi::ChannelDescriptor>) {
+        self.channels = chans;
+    }
+
+    fn build_channel(
+        &self,
+        _config: &AndroidAutoConfiguration,
+        _chanid: ChannelId,
+    ) -> Option<Wifi::ChannelDescriptor> {
+        None
+    }
+
+    async fn receive_data<T: AndroidAutoMainTrait>(
+        &mut self,
+        msg: AndroidAutoFrame,
+        skip_ping: &mut bool,
+        stream: &mut tokio::net::TcpStream,
+        ssl_stream: &mut rustls::client::ClientConnection,
+        config: &AndroidAutoConfiguration,
+        main: &mut T,
+    ) -> Result<(), std::io::Error> {
+        let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
+        if let Ok(msg2) = msg2 {
+            match msg2 {
+                AndroidAutoControlMessage::PingResponse(_) => {
+                    *skip_ping = true;
+                }
+                AndroidAutoControlMessage::PingRequest(a) => {
+                    let mut m = Wifi::PingResponse::new();
+                    m.set_timestamp(a.timestamp() + 1);
+                    let m = AndroidAutoControlMessage::PingResponse(m);
+                    let d: AndroidAutoFrame = m.into();
+                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
+                    stream.write_all(&d2).await?;
+                }
+                AndroidAutoControlMessage::AudioFocusResponse(_) => unimplemented!(),
+                AndroidAutoControlMessage::AudioFocusRequest(m) => {
+                    let mut m2 = Wifi::AudioFocusResponse::new();
+                    let s = if m.has_audio_focus_type() {
+                        match m.audio_focus_type() {
+                            Wifi::audio_focus_type::Enum::NONE => {
+                                Wifi::audio_focus_state::Enum::NONE
+                            }
+                            Wifi::audio_focus_type::Enum::GAIN => {
+                                Wifi::audio_focus_state::Enum::GAIN
+                            }
+                            Wifi::audio_focus_type::Enum::GAIN_TRANSIENT => {
+                                Wifi::audio_focus_state::Enum::GAIN_TRANSIENT
+                            }
+                            Wifi::audio_focus_type::Enum::GAIN_NAVI => {
+                                Wifi::audio_focus_state::Enum::GAIN
+                            }
+                            Wifi::audio_focus_type::Enum::RELEASE => {
+                                Wifi::audio_focus_state::Enum::LOSS
+                            }
+                        }
+                    } else {
+                        Wifi::audio_focus_state::Enum::NONE
+                    };
+                    m2.set_audio_focus_state(s);
+                    let d: AndroidAutoFrame =
+                        AndroidAutoControlMessage::AudioFocusResponse(m2).into();
+                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
+                    stream.write_all(&d2).await?;
+                }
+                AndroidAutoControlMessage::ServiceDiscoveryResponse(_) => unimplemented!(),
+                AndroidAutoControlMessage::ServiceDiscoveryRequest(m) => {
+                    let mut m2 = Wifi::ServiceDiscoveryResponse::new();
+                    m2.set_car_model(config.unit.car_model.clone());
+                    m2.set_can_play_native_media_during_vr(false);
+                    m2.set_car_serial(config.unit.car_serial.clone());
+                    m2.set_car_year(config.unit.car_year.clone());
+                    m2.set_head_unit_name(config.unit.name.clone());
+                    m2.set_headunit_manufacturer(config.unit.head_manufacturer.clone());
+                    m2.set_headunit_model(config.unit.head_model.clone());
+                    if let Some(hide) = config.unit.hide_clock {
+                        m2.set_hide_clock(hide);
+                    }
+                    m2.set_left_hand_drive_vehicle(config.unit.left_hand);
+                    m2.set_sw_build(config.unit.sw_build.clone());
+                    m2.set_sw_version(config.unit.sw_version.clone());
+
+                    for s in &self.channels {
+                        m2.channels.push(s.clone());
+                    }
+
+                    let m3data = [
+                        0x0au8, 0x0f, 0x08, 0x07, 0x2a, 0x0b, 0x08, 0x01, 0x12, 0x07, 0x08, 0x80,
+                        0x7d, 0x10, 0x10, 0x18, 0x01, 0x0a, 0x14, 0x08, 0x04, 0x1a, 0x10, 0x08,
+                        0x01, 0x10, 0x03, 0x1a, 0x08, 0x08, 0x80, 0xf7, 0x02, 0x10, 0x10, 0x18,
+                        0x02, 0x28, 0x01, 0x0a, 0x13, 0x08, 0x05, 0x1a, 0x0f, 0x08, 0x01, 0x10,
+                        0x01, 0x1a, 0x07, 0x08, 0x80, 0x7d, 0x10, 0x10, 0x18, 0x01, 0x28, 0x01,
+                        0x0a, 0x13, 0x08, 0x06, 0x1a, 0x0f, 0x08, 0x01, 0x10, 0x02, 0x1a, 0x07,
+                        0x08, 0x80, 0x7d, 0x10, 0x10, 0x18, 0x01, 0x28, 0x01, 0x0a, 0x0c, 0x08,
+                        0x02, 0x12, 0x08, 0x0a, 0x02, 0x08, 0x0d, 0x0a, 0x02, 0x08, 0x0a, 0x0a,
+                        0x14, 0x08, 0x03, 0x1a, 0x10, 0x08, 0x03, 0x22, 0x0a, 0x08, 0x01, 0x10,
+                        0x02, 0x18, 0x00, 0x20, 0x00, 0x28, 0x6f, 0x28, 0x01, 0x0a, 0x19, 0x08,
+                        0x08, 0x32, 0x15, 0x0a, 0x11, 0x30, 0x30, 0x3a, 0x39, 0x33, 0x3a, 0x33,
+                        0x37, 0x3a, 0x45, 0x46, 0x3a, 0x42, 0x37, 0x3a, 0x35, 0x37, 0x10, 0x04,
+                        0x0a, 0x16, 0x08, 0x09, 0x42, 0x12, 0x08, 0xe8, 0x07, 0x10, 0x01, 0x1a,
+                        0x0b, 0x08, 0x80, 0x02, 0x10, 0x80, 0x02, 0x18, 0x10, 0x20, 0xff, 0x01,
+                        0x0a, 0x04, 0x08, 0x0a, 0x4a, 0x00, 0x0a, 0x0c, 0x08, 0x01, 0x22, 0x08,
+                        0x12, 0x06, 0x08, 0x80, 0x0f, 0x10, 0xb8, 0x08, 0x12, 0x08, 0x4f, 0x70,
+                        0x65, 0x6e, 0x41, 0x75, 0x74, 0x6f, 0x1a, 0x09, 0x55, 0x6e, 0x69, 0x76,
+                        0x65, 0x72, 0x73, 0x61, 0x6c, 0x22, 0x04, 0x32, 0x30, 0x31, 0x38, 0x2a,
+                        0x08, 0x32, 0x30, 0x31, 0x38, 0x30, 0x33, 0x30, 0x31, 0x30, 0x01, 0x3a,
+                        0x03, 0x66, 0x31, 0x78, 0x42, 0x10, 0x4f, 0x70, 0x65, 0x6e, 0x41, 0x75,
+                        0x74, 0x6f, 0x20, 0x41, 0x75, 0x74, 0x6f, 0x61, 0x70, 0x70, 0x4a, 0x01,
+                        0x31, 0x52, 0x03, 0x31, 0x2e, 0x30, 0x58, 0x00, 0x60, 0x00,
+                    ];
+                    let m3 = Wifi::ServiceDiscoveryResponse::parse_from_bytes(&m3data);
+                    log::error!("Golden service response is {:?}", m3);
+                    log::error!("Our service response is {:?}", m2);
+
+                    let m3 = AndroidAutoControlMessage::ServiceDiscoveryResponse(m2);
+                    let d: AndroidAutoFrame = m3.into();
+                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
+                    stream.write_all(&d2).await?;
+                }
+                AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
+                AndroidAutoControlMessage::SslHandshake(data) => {
+                    log::info!("SSL Handshake data is {:x?}", data);
+                    log::error!(
+                        "SSL WANTS RX {} TX {}",
+                        ssl_stream.wants_read(),
+                        ssl_stream.wants_write()
+                    );
+                    if ssl_stream.wants_read() {
+                        let mut dc = std::io::Cursor::new(data);
+                        let asdf = ssl_stream.read_tls(&mut dc);
+                        log::error!("SSL Client process received handshake is {:?}", asdf);
+                        let asdg = ssl_stream.process_new_packets();
+                        log::error!("Process new packets from SSL: {:?}", asdg);
+                    }
+                    log::error!(
+                        "SSL WANTS RX {} TX {}",
+                        ssl_stream.wants_read(),
+                        ssl_stream.wants_write()
+                    );
+                    log::error!("ssl handshaking {}", ssl_stream.is_handshaking());
+                    if ssl_stream.wants_write() {
+                        let mut s = Vec::new();
+                        let l = ssl_stream.write_tls(&mut s);
+                        if let Ok(l) = l {
+                            log::debug!("Got buffer length {} to send for ssl stuff {:x?}", l, s);
+                            let m = AndroidAutoControlMessage::SslHandshake(s);
+                            let d: AndroidAutoFrame = m.into();
+                            let d2: Vec<u8> = d.build_vec(None).await;
+                            stream.write_all(&d2).await?;
+                            log::error!(
+                                "ssl handshaking {} RX {} TX {}",
+                                ssl_stream.is_handshaking(),
+                                ssl_stream.wants_read(),
+                                ssl_stream.wants_write()
+                            );
+                        }
+                    }
+                    if !ssl_stream.is_handshaking() {
+                        let m = AndroidAutoControlMessage::SslAuthComplete(true);
+                        let d: AndroidAutoFrame = m.into();
+                        let d2: Vec<u8> = d.build_vec(None).await;
+                        stream.write_all(&d2).await?;
+                    }
+                }
+                AndroidAutoControlMessage::VersionRequest => unimplemented!(),
+                AndroidAutoControlMessage::VersionResponse {
+                    major,
+                    minor,
+                    status,
+                } => {
+                    if status == 0xFFFF {
+                        log::error!("Version mismatch");
+                        return Err(std::io::Error::other("Version mismatch"));
+                    }
+                    log::info!("Android auto client version: {}.{}", major, minor);
+                    let mut s = Vec::new();
+                    if ssl_stream.wants_write() {
+                        let l = ssl_stream.write_tls(&mut s);
+                        if let Ok(l) = l {
+                            log::debug!("Got buffer length {} to send for ssl stuff {:x?}", l, s);
+                            let m = AndroidAutoControlMessage::SslHandshake(s);
+                            let d: AndroidAutoFrame = m.into();
+                            let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
+                            stream.write_all(&d2).await?;
+                        }
+                    }
+                }
+            }
+        } else {
+            todo!("{:?} {:x?}", msg2.err(), msg);
+        }
+        Ok(())
     }
 }

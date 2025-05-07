@@ -10,15 +10,14 @@ use std::{
 
 mod cert;
 
+use ::protobuf::Message;
 use Wifi::ChannelDescriptor;
-use protobuf::Message;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod control;
 use control::*;
 mod common;
-mod nonspecific;
 use common::*;
 mod video;
 use video::*;
@@ -45,17 +44,27 @@ pub trait AndroidAutoVideoChannelTrait: AndroidAutoMainTrait {
 
 /// This is the bluetooth server for initiating wireless android auto on compatible devices.
 pub struct AndriodAutoBluettothServer {
+    /// The profile needed to communicate over bluetooth
     #[cfg(feature = "wireless")]
     blue: bluetooth_rust::RfcommProfileHandle,
 }
 
-include!(concat!(env!("OUT_DIR"), "/protobuf/mod.rs"));
+#[allow(missing_docs)]
+#[allow(clippy::missing_docs_in_private_items)]
+mod protobufmod {
+    include!(concat!(env!("OUT_DIR"), "/protobuf/mod.rs"));
+}
+use protobufmod::*;
 
+/// The android auto version supported
 const VERSION: (u16, u16) = (1, 1);
 
+/// A message sent or received in the android auto protocol
 #[cfg(feature = "wireless")]
 struct AndroidAutoMessage {
+    /// The message type
     t: u16,
+    /// The message contained in the message
     message: Vec<u8>,
 }
 
@@ -123,56 +132,8 @@ pub struct AndroidAutoConfiguration {
     pub unit: HeadUnitInfo,
 }
 
-/// The channel identifier for a frame
-#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]
-#[repr(u8)]
-enum ChannelId {
-    CONTROL,
-    INPUT,
-    SENSOR,
-    VIDEO,
-    MEDIA_AUDIO,
-    SPEECH_AUDIO,
-    SYSTEM_AUDIO,
-    AV_INPUT,
-    BLUETOOTH,
-    NAVIGATION,
-    MEDIA_STATUS,
-    NONE = 255,
-}
-
-impl TryFrom<u8> for ChannelId {
-    type Error = ();
-    fn try_from(val: u8) -> Result<Self, Self::Error> {
-        if val == ChannelId::CONTROL as u8 {
-            Ok(ChannelId::CONTROL)
-        } else if val == ChannelId::INPUT as u8 {
-            Ok(ChannelId::INPUT)
-        } else if val == ChannelId::SENSOR as u8 {
-            Ok(ChannelId::SENSOR)
-        } else if val == ChannelId::VIDEO as u8 {
-            Ok(ChannelId::VIDEO)
-        } else if val == ChannelId::MEDIA_AUDIO as u8 {
-            Ok(ChannelId::MEDIA_AUDIO)
-        } else if val == ChannelId::SPEECH_AUDIO as u8 {
-            Ok(ChannelId::SPEECH_AUDIO)
-        } else if val == ChannelId::SYSTEM_AUDIO as u8 {
-            Ok(ChannelId::SYSTEM_AUDIO)
-        } else if val == ChannelId::AV_INPUT as u8 {
-            Ok(ChannelId::AV_INPUT)
-        } else if val == ChannelId::BLUETOOTH as u8 {
-            Ok(ChannelId::BLUETOOTH)
-        } else if val == ChannelId::NAVIGATION as u8 {
-            Ok(ChannelId::NAVIGATION)
-        } else if val == ChannelId::MEDIA_STATUS as u8 {
-            Ok(ChannelId::MEDIA_STATUS)
-        } else if val == ChannelId::NONE as u8 {
-            Ok(ChannelId::NONE)
-        } else {
-            Err(())
-        }
-    }
-}
+/// The channel identifier for channels in the android auto protocol
+type ChannelId = u8;
 
 /// Specifies the type of frame header, whether the data of a packet is contained in a single frame, or if it was too large and broken up into multiple frames for transmission.
 #[derive(Debug, PartialEq)]
@@ -206,6 +167,7 @@ impl Into<u8> for FrameHeaderType {
 }
 
 #[allow(missing_docs)]
+/// The frame header module, because bitfield new does not make documentation yet.
 mod frame_header {
     bitfield::bitfield! {
         #[derive(Copy, Clone)]
@@ -226,42 +188,46 @@ use frame_header::FrameHeaderContents;
 /// Represents the header of a frame sent to the android auto client
 #[derive(Copy, Clone, Debug)]
 struct FrameHeader {
+    /// The channelid that this frame is intended for
     channel_id: ChannelId,
+    /// The contents of the frame header
     frame: FrameHeaderContents,
 }
 
 impl FrameHeader {
     /// Add self to the given buffer to build part of a complete frame
     pub fn add_to(&self, buf: &mut Vec<u8>) {
-        buf.push(self.channel_id as u8);
+        buf.push(self.channel_id);
         buf.push(self.frame.0);
     }
 }
 
+/// Responsible for receiving frame headers in the the android auto protocol.
 struct FrameHeaderReceiver {
+    /// The channel id received for a frame header, if one has been received.
     channel_id: Option<ChannelId>,
 }
 
 impl FrameHeaderReceiver {
+    /// Construct a new self
     pub fn new() -> Self {
         Self { channel_id: None }
     }
+
+    /// Read a frame header from the compatible android auto device
+    /// Returns Ok(Some(p)) when a full frame header is actually received.
     pub async fn read(
         &mut self,
         stream: &mut tokio::net::TcpStream,
     ) -> Result<Option<FrameHeader>, std::io::Error> {
         if self.channel_id.is_none() {
             let mut b = [0u8];
-            log::error!("trying to read channel id of frame");
             stream.read_exact(&mut b).await?;
             self.channel_id = ChannelId::try_from(b[0]).ok();
-            log::error!("Got channel id {:?}", self.channel_id);
         }
         if let Some(channel_id) = &self.channel_id {
             let mut b = [0u8];
-            log::error!("Trying to read frame header");
             stream.read_exact(&mut b).await?;
-            log::error!("Got frame header {:x?}", b);
             let mut a = FrameHeaderContents::new(false, FrameHeaderType::Single, false);
             a.0 = b[0];
             let fh = FrameHeader {
@@ -274,14 +240,20 @@ impl FrameHeaderReceiver {
     }
 }
 
+/// A frame of data for comunication in the android auto. When receiving frames, multi-frames are combined into a single frame.
 #[derive(Debug)]
 struct AndroidAutoFrame {
+    /// The header of the frame
     header: FrameHeader,
+    /// The data actually relayed in the frame
     data: Vec<u8>,
 }
 
 impl AndroidAutoFrame {
+    /// The largest payload for a single frame
     const MAX_FRAME_DATA_SIZE: usize = 0x4000;
+    #[allow(dead_code)]
+    /// Currently unused function for building a set of frames for a large packet
     fn build_multi_frame(f: FrameHeader, d: Vec<u8>) -> Vec<Self> {
         let mut m = Vec::new();
         if d.len() < Self::MAX_FRAME_DATA_SIZE {
@@ -293,7 +265,7 @@ impl AndroidAutoFrame {
             for (i, p) in packets.enumerate() {
                 let first = i == 0;
                 let last = i == (max - 1);
-                let mut h = f.clone();
+                let mut h = f;
                 if first {
                     h.frame.set_frame_type(FrameHeaderType::First);
                 } else if last {
@@ -311,10 +283,11 @@ impl AndroidAutoFrame {
         m
     }
 
+    /// Build a vec with the frame that is ready to send out over the connection to the compatible android auto device.
+    /// If necessary, the data will be encrypted.
     async fn build_vec(&self, stream: Option<&mut rustls::client::ClientConnection>) -> Vec<u8> {
         let mut buf = Vec::new();
         self.header.add_to(&mut buf);
-        log::error!("Sending packet {:02x?} {:02x?}", buf, self.data);
         if self.header.frame.get_encryption() {
             if let Some(stream) = stream {
                 let mut data = Vec::new();
@@ -332,17 +305,20 @@ impl AndroidAutoFrame {
             buf.append(&mut p);
             buf.append(&mut data);
         }
-        log::error!("Converted packet to final format to send out: {:02x?}", buf);
         buf
     }
 }
 
+/// Responsible for receiving a full frame from the compatible android auto device
 struct AndroidAutoFrameReceiver {
+    /// The length of the frame to receive, if it is known yet
     len: Option<u16>,
+    /// The data received so far for a multi-frame packet
     rx_sofar: Vec<Vec<u8>>,
 }
 
 impl AndroidAutoFrameReceiver {
+    /// Construct a new frame receiver
     fn new() -> Self {
         Self {
             len: None,
@@ -350,33 +326,7 @@ impl AndroidAutoFrameReceiver {
         }
     }
 
-    fn read_plain(
-        &mut self,
-        header: &FrameHeader,
-        stream: &mut std::net::TcpStream,
-    ) -> Result<Option<AndroidAutoFrame>, String> {
-        use std::io::Read;
-        if self.len.is_none() {
-            let mut p = [0u8; 2];
-            stream.read_exact(&mut p).map_err(|e| e.to_string())?;
-            let len = u16::from_be_bytes(p);
-            self.len.replace(len);
-        }
-        if let Some(len) = &self.len {
-            let mut data_frame = vec![0u8; *len as usize];
-            stream
-                .read_exact(&mut data_frame)
-                .map_err(|e| e.to_string())?;
-            let f = AndroidAutoFrame {
-                header: header.clone(),
-                data: data_frame.clone(),
-            };
-            let f = Some(f);
-            return Ok(f);
-        }
-        Ok(None)
-    }
-
+    /// Read the contents of a frame using the details specified in the header that has already been read.
     async fn read(
         &mut self,
         header: &FrameHeader,
@@ -451,7 +401,7 @@ impl AndroidAutoFrameReceiver {
             if let Some(data) = data {
                 let data: Vec<u8> = data.into_iter().flatten().collect();
                 let f = AndroidAutoFrame {
-                    header: header.clone(),
+                    header: *header,
                     data,
                 };
                 let f = Some(f);
@@ -462,12 +412,16 @@ impl AndroidAutoFrameReceiver {
     }
 }
 
+/// A message sent or received over the android auto bluetooth connection. Used for setting up wireless android auto.
 enum AndroidAutoBluetoothMessage {
+    /// A request for socket information
     SocketInfoRequest(Bluetooth::SocketInfoRequest),
+    /// A message relaying network information to the other party
     NetworkInfoMessage(Bluetooth::NetworkInfo),
 }
 
 impl AndroidAutoBluetoothMessage {
+    /// Build an `AndroidAutoMessage` from self
     fn as_message(&self) -> AndroidAutoMessage {
         use protobuf::Message;
         match self {
@@ -500,8 +454,10 @@ impl Into<Vec<u8>> for AndroidAutoMessage {
     }
 }
 
+/// The trait that all channel handlers must implement for android auto channels.
 #[enum_dispatch::enum_dispatch]
 trait ChannelHandlerTrait {
+    /// Process data received that is specific to this channel. Return an error for any packets that were not handled that should cause communication to stop.
     async fn receive_data<T: AndroidAutoMainTrait>(
         &mut self,
         msg: AndroidAutoFrame,
@@ -512,17 +468,22 @@ trait ChannelHandlerTrait {
         main: &mut T,
     ) -> Result<(), std::io::Error>;
 
+    /// Construct the channeldescriptor with the channel handler so it can be conveyed to the compatible android auto device
     fn build_channel(
         &self,
         config: &AndroidAutoConfiguration,
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor>;
 
-    fn set_channels(&mut self, chans: Vec<ChannelDescriptor>) {}
+    /// Set the list of all channels for the current channel. Only used for the control channel. This is because the control channel must be created first.
+    fn set_channels(&mut self, _chans: Vec<ChannelDescriptor>) {}
 }
 
+/// A message about binding input buttons on a compatible android auto head unit
 enum InputMessage {
+    /// A message requesting input buttons to be bound
     BindingRequest(ChannelId, Wifi::BindingRequest),
+    /// A message that responds to a binding request, indicating success or failure of the request
     BindingResponse(ChannelId, Wifi::BindingResponse),
 }
 
@@ -563,7 +524,7 @@ impl TryFrom<&AndroidAutoFrame> for InputMessage {
                     let m = Wifi::BindingRequest::parse_from_bytes(&value.data[2..]);
                     match m {
                         Ok(m) => Ok(Self::BindingRequest(value.header.channel_id, m)),
-                        Err(e) => Err(format!("Invalid input bind request: {}", e.to_string())),
+                        Err(e) => Err(format!("Invalid input bind request: {}", e)),
                     }
                 }
                 Wifi::input_channel_message::Enum::BINDING_RESPONSE => unimplemented!(),
@@ -576,6 +537,7 @@ impl TryFrom<&AndroidAutoFrame> for InputMessage {
     }
 }
 
+/// The handler for the input channel for the android auto protocol
 struct InputChannelHandler {}
 
 impl ChannelHandlerTrait for InputChannelHandler {
@@ -585,7 +547,7 @@ impl ChannelHandlerTrait for InputChannelHandler {
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         let mut ichan = Wifi::InputChannel::new();
         let mut tc = Wifi::TouchConfig::new();
         tc.set_height(480);
@@ -607,7 +569,6 @@ impl ChannelHandlerTrait for InputChannelHandler {
         _config: &AndroidAutoConfiguration,
         main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<InputMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -663,6 +624,7 @@ impl ChannelHandlerTrait for InputChannelHandler {
     }
 }
 
+/// The handler for the media audio channel for the android auto protocol
 struct MediaAudioChannelHandler {}
 
 impl ChannelHandlerTrait for MediaAudioChannelHandler {
@@ -672,7 +634,7 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         let mut avchan = Wifi::AVChannel::new();
         avchan.set_audio_type(Wifi::audio_type::Enum::MEDIA);
         avchan.set_available_while_in_call(true);
@@ -698,7 +660,6 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
         _config: &AndroidAutoConfiguration,
         main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -752,10 +713,14 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
     }
 }
 
+/// A message about the media status of currently playing media
 #[derive(Debug)]
 enum MediaStatusMessage {
+    /// A message containing basic information about changes to the currently playing media
     Playback(ChannelId, Wifi::MediaInfoChannelPlaybackData),
+    /// The metadata containing information about the media currently playing
     Metadata(ChannelId, Wifi::MediaInfoChannelMetadataData),
+    /// The media status message was invalid for some reason
     Invalid,
 }
 
@@ -800,6 +765,7 @@ impl TryFrom<&AndroidAutoFrame> for MediaStatusMessage {
     }
 }
 
+/// The handler for media status for the android auto protocol
 struct MediaStatusChannelHandler {}
 
 impl ChannelHandlerTrait for MediaStatusChannelHandler {
@@ -809,7 +775,7 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         let mchan = Wifi::MediaInfoChannel::new();
         chan.media_infoChannel.0.replace(Box::new(mchan));
         if !chan.is_initialized() {
@@ -827,7 +793,6 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
         _config: &AndroidAutoConfiguration,
         main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<MediaStatusMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -884,6 +849,7 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
     }
 }
 
+/// The handler for navigation for the android auto protocol
 struct NavigationChannelHandler {}
 
 impl ChannelHandlerTrait for NavigationChannelHandler {
@@ -902,7 +868,7 @@ impl ChannelHandlerTrait for NavigationChannelHandler {
         io.set_height(256);
         io.set_width(256);
         navchan.image_options.0.replace(Box::new(io));
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         chan.navigation_channel.0.replace(Box::new(navchan));
         if !chan.is_initialized() {
             panic!("Channel not initialized?");
@@ -919,7 +885,6 @@ impl ChannelHandlerTrait for NavigationChannelHandler {
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -961,6 +926,7 @@ impl ChannelHandlerTrait for NavigationChannelHandler {
     }
 }
 
+/// The handler for speech audio for the android auto protocol
 struct SpeechAudioChannelHandler {}
 
 impl ChannelHandlerTrait for SpeechAudioChannelHandler {
@@ -970,7 +936,7 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         let mut avchan = Wifi::AVChannel::new();
         avchan.set_audio_type(Wifi::audio_type::Enum::SPEECH);
         avchan.set_available_while_in_call(true);
@@ -996,7 +962,6 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -1050,20 +1015,28 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
     }
 }
 
+/// A message sent for an av channel
 enum AvChannelMessage {
+    /// A message to start setup of the av channel
     SetupRequest(ChannelId, Wifi::AVChannelSetupRequest),
+    /// A message that responds to a setup request
     SetupResponse(ChannelId, Wifi::AVChannelSetupResponse),
+    /// Message requesting the focus of the video channel to be set
     VideoFocusRequest(ChannelId, Wifi::VideoFocusRequest),
+    /// Message indication the focus status of the video stream on the head unit
     VideoIndicationResponse(ChannelId, Wifi::VideoFocusIndication),
+    /// The stream is about to start
     StartIndication(ChannelId, Wifi::AVChannelStartIndication),
+    /// A media indication message, optionally containing a timestamp
     MediaIndication(ChannelId, Option<u64>, Vec<u8>),
+    /// An acknowledgement of receiving a media indication message
     MediaIndicationAck(ChannelId, Wifi::AVMediaAckIndication),
 }
 
-impl Into<AndroidAutoFrame> for AvChannelMessage {
-    fn into(self) -> AndroidAutoFrame {
-        match self {
-            Self::MediaIndicationAck(chan, m) => {
+impl From<AvChannelMessage> for AndroidAutoFrame {
+    fn from(value: AvChannelMessage) -> Self {
+        match value {
+            AvChannelMessage::MediaIndicationAck(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::avchannel_message::Enum::AV_MEDIA_ACK_INDICATION as u16;
                 let t = t.to_be_bytes();
@@ -1079,8 +1052,8 @@ impl Into<AndroidAutoFrame> for AvChannelMessage {
                     data: m,
                 }
             }
-            Self::SetupRequest(_, _) => unimplemented!(),
-            Self::SetupResponse(chan, m) => {
+            AvChannelMessage::SetupRequest(_, _) => unimplemented!(),
+            AvChannelMessage::SetupResponse(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::avchannel_message::Enum::SETUP_RESPONSE as u16;
                 let t = t.to_be_bytes();
@@ -1096,9 +1069,9 @@ impl Into<AndroidAutoFrame> for AvChannelMessage {
                     data: m,
                 }
             }
-            Self::MediaIndication(_, _, _) => unimplemented!(),
-            Self::VideoFocusRequest(chan, m) => unimplemented!(),
-            Self::VideoIndicationResponse(chan, m) => {
+            AvChannelMessage::MediaIndication(_, _, _) => unimplemented!(),
+            AvChannelMessage::VideoFocusRequest(chan, m) => unimplemented!(),
+            AvChannelMessage::VideoIndicationResponse(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::avchannel_message::Enum::VIDEO_FOCUS_INDICATION as u16;
                 let t = t.to_be_bytes();
@@ -1114,7 +1087,7 @@ impl Into<AndroidAutoFrame> for AvChannelMessage {
                     data: m,
                 }
             }
-            Self::StartIndication(_, _) => unimplemented!(),
+            AvChannelMessage::StartIndication(_, _) => unimplemented!(),
         }
     }
 }
@@ -1152,14 +1125,14 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
                     let m = Wifi::AVChannelSetupRequest::parse_from_bytes(&value.data[2..]);
                     match m {
                         Ok(m) => Ok(Self::SetupRequest(value.header.channel_id, m)),
-                        Err(e) => Err(format!("Invalid channel open request: {}", e.to_string())),
+                        Err(e) => Err(format!("Invalid channel open request: {}", e)),
                     }
                 }
                 Wifi::avchannel_message::Enum::START_INDICATION => {
                     let m = Wifi::AVChannelStartIndication::parse_from_bytes(&value.data[2..]);
                     match m {
                         Ok(m) => Ok(Self::StartIndication(value.header.channel_id, m)),
-                        Err(e) => Err(format!("Invalid channel open request: {}", e.to_string())),
+                        Err(e) => Err(format!("Invalid channel open request: {}", e)),
                     }
                 }
                 Wifi::avchannel_message::Enum::STOP_INDICATION => todo!(),
@@ -1172,7 +1145,7 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
                     log::error!("Video focus request {:02x?}", m);
                     match m {
                         Ok(m) => Ok(Self::VideoFocusRequest(value.header.channel_id, m)),
-                        Err(e) => Err(format!("Invalid channel open request: {}", e.to_string())),
+                        Err(e) => Err(format!("Invalid channel open request: {}", e)),
                     }
                 }
                 Wifi::avchannel_message::Enum::VIDEO_FOCUS_INDICATION => unimplemented!(),
@@ -1183,6 +1156,7 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
     }
 }
 
+/// Handles the system audo channel of the android auto protocol
 struct SystemAudioChannelHandler {}
 
 impl ChannelHandlerTrait for SystemAudioChannelHandler {
@@ -1192,7 +1166,7 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         let mut avchan = Wifi::AVChannel::new();
         avchan.set_audio_type(Wifi::audio_type::Enum::SYSTEM);
         avchan.set_available_while_in_call(true);
@@ -1218,7 +1192,6 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
         _config: &AndroidAutoConfiguration,
         main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -1253,8 +1226,8 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
                     stream.write_all(&d2).await?;
                 }
-                AvChannelMessage::SetupResponse(chan, m) => unimplemented!(),
-                AvChannelMessage::VideoFocusRequest(chan, m) => {
+                AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
+                AvChannelMessage::VideoFocusRequest(_chan, _m) => {
                     let mut m2 = Wifi::VideoFocusIndication::new();
                     m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
                     m2.set_unrequested(false);
@@ -1272,6 +1245,7 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
     }
 }
 
+/// Handles the av input channel of the android auto protocol
 struct AvInputChannelHandler {}
 
 impl ChannelHandlerTrait for AvInputChannelHandler {
@@ -1281,7 +1255,7 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         let mut avchan = Wifi::AVInputChannel::new();
         //avchan.set_available_while_in_call(true);
         avchan.set_stream_type(Wifi::avstream_type::Enum::AUDIO);
@@ -1304,9 +1278,8 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
-        main: &mut T,
+        _main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -1348,212 +1321,15 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
     }
 }
 
-struct ControlChannelHandler {
-    channels: Vec<ChannelDescriptor>,
-}
-
-impl ChannelHandlerTrait for ControlChannelHandler {
-    fn set_channels(&mut self, chans: Vec<ChannelDescriptor>) {
-        self.channels = chans;
-    }
-
-    fn build_channel(
-        &self,
-        _config: &AndroidAutoConfiguration,
-        _chanid: ChannelId,
-    ) -> Option<ChannelDescriptor> {
-        None
-    }
-
-    async fn receive_data<T: AndroidAutoMainTrait>(
-        &mut self,
-        msg: AndroidAutoFrame,
-        skip_ping: &mut bool,
-        stream: &mut tokio::net::TcpStream,
-        ssl_stream: &mut rustls::client::ClientConnection,
-        config: &AndroidAutoConfiguration,
-        main: &mut T,
-    ) -> Result<(), std::io::Error> {
-        let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
-        if let Ok(msg2) = msg2 {
-            match msg2 {
-                AndroidAutoControlMessage::PingResponse(_) => {
-                    *skip_ping = true;
-                }
-                AndroidAutoControlMessage::PingRequest(a) => {
-                    let mut m = Wifi::PingResponse::new();
-                    m.set_timestamp(a.timestamp() + 1);
-                    let m = AndroidAutoControlMessage::PingResponse(m);
-                    let d: AndroidAutoFrame = m.into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
-                }
-                AndroidAutoControlMessage::AudioFocusResponse(_) => unimplemented!(),
-                AndroidAutoControlMessage::AudioFocusRequest(m) => {
-                    let mut m2 = Wifi::AudioFocusResponse::new();
-                    let s = if m.has_audio_focus_type() {
-                        match m.audio_focus_type() {
-                            Wifi::audio_focus_type::Enum::NONE => {
-                                Wifi::audio_focus_state::Enum::NONE
-                            }
-                            Wifi::audio_focus_type::Enum::GAIN => {
-                                Wifi::audio_focus_state::Enum::GAIN
-                            }
-                            Wifi::audio_focus_type::Enum::GAIN_TRANSIENT => {
-                                Wifi::audio_focus_state::Enum::GAIN_TRANSIENT
-                            }
-                            Wifi::audio_focus_type::Enum::GAIN_NAVI => {
-                                Wifi::audio_focus_state::Enum::GAIN
-                            }
-                            Wifi::audio_focus_type::Enum::RELEASE => {
-                                Wifi::audio_focus_state::Enum::LOSS
-                            }
-                        }
-                    } else {
-                        Wifi::audio_focus_state::Enum::NONE
-                    };
-                    m2.set_audio_focus_state(s);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoControlMessage::AudioFocusResponse(m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
-                }
-                AndroidAutoControlMessage::ServiceDiscoveryResponse(_) => unimplemented!(),
-                AndroidAutoControlMessage::ServiceDiscoveryRequest(m) => {
-                    let mut m2 = Wifi::ServiceDiscoveryResponse::new();
-                    m2.set_car_model(config.unit.car_model.clone());
-                    m2.set_can_play_native_media_during_vr(false);
-                    m2.set_car_serial(config.unit.car_serial.clone());
-                    m2.set_car_year(config.unit.car_year.clone());
-                    m2.set_head_unit_name(config.unit.name.clone());
-                    m2.set_headunit_manufacturer(config.unit.head_manufacturer.clone());
-                    m2.set_headunit_model(config.unit.head_model.clone());
-                    if let Some(hide) = config.unit.hide_clock {
-                        m2.set_hide_clock(hide);
-                    }
-                    m2.set_left_hand_drive_vehicle(config.unit.left_hand);
-                    m2.set_sw_build(config.unit.sw_build.clone());
-                    m2.set_sw_version(config.unit.sw_version.clone());
-
-                    for s in &self.channels {
-                        m2.channels.push(s.clone());
-                    }
-
-                    let m3data = [
-                        0x0au8, 0x0f, 0x08, 0x07, 0x2a, 0x0b, 0x08, 0x01, 0x12, 0x07, 0x08, 0x80,
-                        0x7d, 0x10, 0x10, 0x18, 0x01, 0x0a, 0x14, 0x08, 0x04, 0x1a, 0x10, 0x08,
-                        0x01, 0x10, 0x03, 0x1a, 0x08, 0x08, 0x80, 0xf7, 0x02, 0x10, 0x10, 0x18,
-                        0x02, 0x28, 0x01, 0x0a, 0x13, 0x08, 0x05, 0x1a, 0x0f, 0x08, 0x01, 0x10,
-                        0x01, 0x1a, 0x07, 0x08, 0x80, 0x7d, 0x10, 0x10, 0x18, 0x01, 0x28, 0x01,
-                        0x0a, 0x13, 0x08, 0x06, 0x1a, 0x0f, 0x08, 0x01, 0x10, 0x02, 0x1a, 0x07,
-                        0x08, 0x80, 0x7d, 0x10, 0x10, 0x18, 0x01, 0x28, 0x01, 0x0a, 0x0c, 0x08,
-                        0x02, 0x12, 0x08, 0x0a, 0x02, 0x08, 0x0d, 0x0a, 0x02, 0x08, 0x0a, 0x0a,
-                        0x14, 0x08, 0x03, 0x1a, 0x10, 0x08, 0x03, 0x22, 0x0a, 0x08, 0x01, 0x10,
-                        0x02, 0x18, 0x00, 0x20, 0x00, 0x28, 0x6f, 0x28, 0x01, 0x0a, 0x19, 0x08,
-                        0x08, 0x32, 0x15, 0x0a, 0x11, 0x30, 0x30, 0x3a, 0x39, 0x33, 0x3a, 0x33,
-                        0x37, 0x3a, 0x45, 0x46, 0x3a, 0x42, 0x37, 0x3a, 0x35, 0x37, 0x10, 0x04,
-                        0x0a, 0x16, 0x08, 0x09, 0x42, 0x12, 0x08, 0xe8, 0x07, 0x10, 0x01, 0x1a,
-                        0x0b, 0x08, 0x80, 0x02, 0x10, 0x80, 0x02, 0x18, 0x10, 0x20, 0xff, 0x01,
-                        0x0a, 0x04, 0x08, 0x0a, 0x4a, 0x00, 0x0a, 0x0c, 0x08, 0x01, 0x22, 0x08,
-                        0x12, 0x06, 0x08, 0x80, 0x0f, 0x10, 0xb8, 0x08, 0x12, 0x08, 0x4f, 0x70,
-                        0x65, 0x6e, 0x41, 0x75, 0x74, 0x6f, 0x1a, 0x09, 0x55, 0x6e, 0x69, 0x76,
-                        0x65, 0x72, 0x73, 0x61, 0x6c, 0x22, 0x04, 0x32, 0x30, 0x31, 0x38, 0x2a,
-                        0x08, 0x32, 0x30, 0x31, 0x38, 0x30, 0x33, 0x30, 0x31, 0x30, 0x01, 0x3a,
-                        0x03, 0x66, 0x31, 0x78, 0x42, 0x10, 0x4f, 0x70, 0x65, 0x6e, 0x41, 0x75,
-                        0x74, 0x6f, 0x20, 0x41, 0x75, 0x74, 0x6f, 0x61, 0x70, 0x70, 0x4a, 0x01,
-                        0x31, 0x52, 0x03, 0x31, 0x2e, 0x30, 0x58, 0x00, 0x60, 0x00,
-                    ];
-                    let m3 = Wifi::ServiceDiscoveryResponse::parse_from_bytes(&m3data);
-                    log::error!("Golden service response is {:?}", m3);
-                    log::error!("Our service response is {:?}", m2);
-
-                    let m3 = AndroidAutoControlMessage::ServiceDiscoveryResponse(m2);
-                    let d: AndroidAutoFrame = m3.into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
-                }
-                AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
-                AndroidAutoControlMessage::SslHandshake(data) => {
-                    log::info!("SSL Handshake data is {:x?}", data);
-                    log::error!(
-                        "SSL WANTS RX {} TX {}",
-                        ssl_stream.wants_read(),
-                        ssl_stream.wants_write()
-                    );
-                    if ssl_stream.wants_read() {
-                        let mut dc = std::io::Cursor::new(data);
-                        let asdf = ssl_stream.read_tls(&mut dc);
-                        log::error!("SSL Client process received handshake is {:?}", asdf);
-                        let asdg = ssl_stream.process_new_packets();
-                        log::error!("Process new packets from SSL: {:?}", asdg);
-                    }
-                    log::error!(
-                        "SSL WANTS RX {} TX {}",
-                        ssl_stream.wants_read(),
-                        ssl_stream.wants_write()
-                    );
-                    log::error!("ssl handshaking {}", ssl_stream.is_handshaking());
-                    if ssl_stream.wants_write() {
-                        let mut s = Vec::new();
-                        let l = ssl_stream.write_tls(&mut s);
-                        if let Ok(l) = l {
-                            log::debug!("Got buffer length {} to send for ssl stuff {:x?}", l, s);
-                            let m = AndroidAutoControlMessage::SslHandshake(s);
-                            let d: AndroidAutoFrame = m.into();
-                            let d2: Vec<u8> = d.build_vec(None).await;
-                            stream.write_all(&d2).await?;
-                            log::error!(
-                                "ssl handshaking {} RX {} TX {}",
-                                ssl_stream.is_handshaking(),
-                                ssl_stream.wants_read(),
-                                ssl_stream.wants_write()
-                            );
-                        }
-                    }
-                    if !ssl_stream.is_handshaking() {
-                        let m = AndroidAutoControlMessage::SslAuthComplete(true);
-                        let d: AndroidAutoFrame = m.into();
-                        let d2: Vec<u8> = d.build_vec(None).await;
-                        stream.write_all(&d2).await?;
-                    }
-                }
-                AndroidAutoControlMessage::VersionRequest => unimplemented!(),
-                AndroidAutoControlMessage::VersionResponse {
-                    major,
-                    minor,
-                    status,
-                } => {
-                    if status == 0xFFFF {
-                        log::error!("Version mismatch");
-                        return Err(std::io::Error::other("Version mismatch"));
-                    }
-                    log::info!("Android auto client version: {}.{}", major, minor);
-                    let mut s = Vec::new();
-                    if ssl_stream.wants_write() {
-                        let l = ssl_stream.write_tls(&mut s);
-                        if let Ok(l) = l {
-                            log::debug!("Got buffer length {} to send for ssl stuff {:x?}", l, s);
-                            let m = AndroidAutoControlMessage::SslHandshake(s);
-                            let d: AndroidAutoFrame = m.into();
-                            let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                            stream.write_all(&d2).await?;
-                        }
-                    }
-                }
-            }
-        } else {
-            todo!("{:?} {:x?}", msg2.err(), msg);
-        }
-        Ok(())
-    }
-}
-
+/// The server verifier for android auto head units. This verifies the certificate in the android auto compatible device (probably a phone)
 #[derive(Debug)]
 struct AndroidAutoServerVerifier {
+    /// The object providing most of the functionality for server verification
     base: Arc<rustls::client::WebPkiServerVerifier>,
 }
 
 impl AndroidAutoServerVerifier {
+    /// Build a new server verifier using the given root certificate store
     fn new(roots: Arc<rustls::RootCertStore>) -> Self {
         Self {
             base: rustls::client::WebPkiServerVerifier::builder(roots)
@@ -1598,6 +1374,7 @@ impl rustls::client::danger::ServerCertVerifier for AndroidAutoServerVerifier {
     }
 }
 
+/// The channel handler type that covers all possible channel handlers
 #[enum_dispatch::enum_dispatch(ChannelHandlerTrait)]
 enum ChannelHandler {
     Control(ControlChannelHandler),
@@ -1687,8 +1464,8 @@ impl AndriodAutoBluettothServer {
                                     response.set_ssid(network2.ssid.clone());
                                     response.set_psk(network2.psk.clone());
                                     response.set_mac_addr(network2.mac_addr.clone());
-                                    response.set_security_mode(network2.security_mode.clone());
-                                    response.set_ap_type(network2.ap_type.clone());
+                                    response.set_security_mode(network2.security_mode);
+                                    response.set_ap_type(network2.ap_type);
                                     let response =
                                         AndroidAutoBluetoothMessage::NetworkInfoMessage(response);
                                     let m: AndroidAutoMessage = response.as_message();
@@ -1714,6 +1491,7 @@ impl AndriodAutoBluettothServer {
         }
     }
 
+    /// Handle a single android auto device for a head unit
     async fn handle_client<T: AndroidAutoMainTrait>(
         mut stream: tokio::net::TcpStream,
         addr: std::net::SocketAddr,
@@ -1766,12 +1544,7 @@ impl AndriodAutoBluettothServer {
         );
 
         let mut channel_handlers: Vec<ChannelHandler> = Vec::new();
-        channel_handlers.push(
-            ControlChannelHandler {
-                channels: Vec::new(),
-            }
-            .into(),
-        );
+        channel_handlers.push(ControlChannelHandler::new().into());
         channel_handlers.push(InputChannelHandler {}.into());
         channel_handlers.push(SensorChannelHandler {}.into());
         if main.supports_video().is_some() {
@@ -1790,7 +1563,7 @@ impl AndriodAutoBluettothServer {
         let chan_visit = [7, 4, 5, 6, 2, 3, 8, 9, 10, 1];
         for index in chan_visit {
             let handler = &channel_handlers[index];
-            let chan: ChannelId = (index as u8).try_into().unwrap();
+            let chan: ChannelId = index as u8;
             if let Some(chan) = handler.build_channel(&config, chan) {
                 chans.push(chan);
             }
@@ -1854,7 +1627,7 @@ impl AndriodAutoBluettothServer {
                 }
             };
             let f2 = if let Some(f) = f {
-                let f2 = loop {
+                loop {
                     match fr2.read(&f, &mut stream, &mut ssl_client).await {
                         Ok(Some(f2)) => break Some(f2),
                         Ok(None) => {
@@ -1903,8 +1676,7 @@ impl AndriodAutoBluettothServer {
                             _ => return Err("Unknown error reading frame header".to_string()),
                         },
                     }
-                };
-                f2
+                }
             } else {
                 None
             };

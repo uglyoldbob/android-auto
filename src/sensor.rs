@@ -1,16 +1,22 @@
+//! Contains sensor channel code
+
 use super::{
     AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoControlMessage,
-    AndroidAutoFrame, AndroidAutoMainTrait, AvChannelMessage, ChannelDescriptor,
-    ChannelHandlerTrait, ChannelId, FrameHeader, FrameHeaderContents, FrameHeaderType,
+    AndroidAutoFrame, AndroidAutoMainTrait, ChannelDescriptor, ChannelHandlerTrait, ChannelId,
+    FrameHeader, FrameHeaderContents, FrameHeaderType,
 };
-use crate::Wifi::{self, DrivingStatus};
-use protobuf::{Enum, EnumOrUnknown, Message};
+use crate::Wifi;
+use protobuf::Message;
 use tokio::io::AsyncWriteExt;
 
+/// A message about sensors in android auto
 #[derive(Debug)]
 pub enum SensorMessage {
+    /// A request to start a specific sensor
     SensorStartRequest(ChannelId, Wifi::SensorStartRequestMessage),
+    /// A response to the sensor start request
     SensorStartResponse(ChannelId, Wifi::SensorStartResponseMessage),
+    /// A message containing sensor data
     Event(ChannelId, Wifi::SensorEventIndication),
 }
 
@@ -80,6 +86,7 @@ impl TryFrom<&AndroidAutoFrame> for SensorMessage {
     }
 }
 
+/// The handler for the sensor channel in the android auto protocol.
 pub struct SensorChannelHandler {}
 
 impl ChannelHandlerTrait for SensorChannelHandler {
@@ -105,7 +112,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
             sensor.sensors.push(s);
         }
         chan.sensor_channel.0.replace(Box::new(sensor));
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         if !chan.is_initialized() {
             panic!("Channel not initialized?");
         }
@@ -121,7 +128,6 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         _config: &AndroidAutoConfiguration,
         main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<SensorMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {

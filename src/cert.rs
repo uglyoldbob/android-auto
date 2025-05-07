@@ -1,3 +1,6 @@
+//! Contains hard-coded default certificates for the android auto protocol.
+
+/// The server cert root certificate for the android auto server, this will be the device (probably a phone) trying to use android auto services.
 pub const AAUTO_CERT: &str = "-----BEGIN CERTIFICATE-----\n\
 MIIDiTCCAnGgAwIBAgIJAMFO56WkVE1CMA0GCSqGSIb3DQEBBQUAMFsxCzAJBgNV\n\
 BAYTAlVTMRMwEQYDVQQIDApDYWxpZm9ybmlhMRYwFAYDVQQHDA1Nb3VudGFpbiBW\n\
@@ -20,6 +23,7 @@ KqbTEMP6XUwVuZopgGvaHU74eT/WSRGlL7vX4OL5/UXXP4qsGH2Zp7uQlErv4H9j\n\
 kMs37UL1vGb4M8RM7Eyu9/RulepSmqZUF+3i+3eby8iGq/3OWk9wgJf7AXnx\n\
 -----END CERTIFICATE-----\n";
 
+/// The certificate for the android auto head unit client certificate. The client is the head unit in the tls scheme.
 pub const CERTIFICATE: &str = "-----BEGIN CERTIFICATE-----\n\
 MIIDKjCCAhICARswDQYJKoZIhvcNAQELBQAwWzELMAkGA1UEBhMCVVMxEzARBgNV\n\
 BAgMCkNhbGlmb3JuaWExFjAUBgNVBAcMDU1vdW50YWluIFZpZXcxHzAdBgNVBAoM\n\
@@ -40,6 +44,7 @@ YmsbkPVNYZn37FlY7e2Z4FUphh0A7yME2Eh/e57QxWrJ1wubdzGnX8mrABc67ADU\n\
 U5r9tlTRqMs7FGOk6QS2Cxp4pqeVQsrPts4OEwyPUyb3LfFNo3+sP111D9zEow==\n\
 -----END CERTIFICATE-----\n";
 
+/// The private key for the android auto head unit client certificate. The client is the head unit in the tls scheme.
 pub const PRIVATE_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
 MIIEowIBAAKCAQEAz3XWY2dR/H5Ym3G6TToY7uRdFb+BdRU1AGRsAVmZV1U28ugR\n\
 A22GLZfxYI7Bfqfqgw/FTYwYme+Jw/fqQGp8eF9DYW+qV/tiOOGAEeHSWopKFU/E\n\

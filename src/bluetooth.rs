@@ -1,16 +1,22 @@
+//! Contains bluetooth channel code
+
 use super::{
     AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoControlMessage,
-    AndroidAutoFrame, AndroidAutoMainTrait, AvChannelMessage, ChannelDescriptor,
-    ChannelHandlerTrait, ChannelId, FrameHeader, FrameHeaderContents, FrameHeaderType,
+    AndroidAutoFrame, AndroidAutoMainTrait, ChannelDescriptor, ChannelHandlerTrait, ChannelId,
+    FrameHeader, FrameHeaderContents, FrameHeaderType,
 };
 use crate::Wifi;
-use protobuf::{Enum, EnumOrUnknown, Message};
+use protobuf::{EnumOrUnknown, Message};
 use tokio::io::AsyncWriteExt;
 
+/// A message about bluetooth operations
 #[derive(Debug)]
 pub enum BluetoothMessage {
+    /// A request to pair with a specified bluetooth device
     PairingRequest(ChannelId, Wifi::BluetoothPairingRequest),
+    /// A response to a pairing request
     PairingResponse(ChannelId, Wifi::BluetoothPairingResponse),
+    /// An authentication message of some variety for the bluetooth channel?
     Auth,
 }
 
@@ -66,6 +72,7 @@ impl TryFrom<&AndroidAutoFrame> for BluetoothMessage {
     }
 }
 
+/// The handler for the bluetooth channel in the android auto protocol. This is different than the bluetooth channel used to initialize wireless android auto.
 pub struct BluetoothChannelHandler {}
 
 impl ChannelHandlerTrait for BluetoothChannelHandler {
@@ -75,7 +82,7 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         let mut bchan = Wifi::BluetoothChannel::new();
         bchan.set_adapter_address(config.bluetooth.address.clone());
         let meth = Wifi::bluetooth_pairing_method::Enum::HFP;
@@ -98,7 +105,6 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
         _config: &AndroidAutoConfiguration,
         main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<BluetoothMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {

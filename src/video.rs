@@ -1,3 +1,5 @@
+//! Contains code for the the video channel
+
 use super::{
     AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait,
     AvChannelMessage, ChannelHandlerTrait, ChannelId, FrameHeader, FrameHeaderContents,
@@ -7,6 +9,7 @@ use crate::Wifi;
 use protobuf::{Enum, Message};
 use tokio::io::AsyncWriteExt;
 
+/// The handler for the video channel on android auto
 pub struct VideoChannelHandler {}
 
 impl ChannelHandlerTrait for VideoChannelHandler {
@@ -17,7 +20,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
     ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = Wifi::ChannelDescriptor::new();
         let mut avchan = Wifi::AVChannel::new();
-        chan.set_channel_id(chanid as u8 as u32);
+        chan.set_channel_id(chanid as u32);
         avchan.set_stream_type(Wifi::avstream_type::Enum::VIDEO);
         avchan.set_available_while_in_call(true);
         avchan.set_audio_type(Wifi::audio_type::Enum::SYSTEM);
@@ -54,7 +57,6 @@ impl ChannelHandlerTrait for VideoChannelHandler {
         _config: &AndroidAutoConfiguration,
         main: &mut T,
     ) -> Result<(), std::io::Error> {
-        use std::io::Write;
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {

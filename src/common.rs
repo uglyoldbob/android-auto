@@ -1,11 +1,15 @@
-use super::VERSION;
+//! Messages common to all channels
+
 use super::{AndroidAutoFrame, ChannelId, FrameHeader, FrameHeaderContents, FrameHeaderType};
-use crate::Wifi::{self, CommonMessage};
+use crate::Wifi;
 use protobuf::{Enum, Message};
 
+/// Messages common to all android auto channels.
 #[derive(Debug)]
 pub enum AndroidAutoCommonMessage {
+    /// A request to the open the channel from the compatible android auto device
     ChannelOpenRequest(Wifi::ChannelOpenRequest),
+    /// A response to a channel open request
     ChannelOpenResponse(ChannelId, Wifi::ChannelOpenResponse),
 }
 
@@ -26,9 +30,7 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoCommonMessage {
                         let m = Wifi::ChannelOpenRequest::parse_from_bytes(&value.data[2..]);
                         match m {
                             Ok(m) => Ok(AndroidAutoCommonMessage::ChannelOpenRequest(m)),
-                            Err(e) => {
-                                Err(format!("Invalid channel open request: {}", e.to_string()))
-                            }
+                            Err(e) => Err(format!("Invalid channel open request: {}", e)),
                         }
                     }
                 }
