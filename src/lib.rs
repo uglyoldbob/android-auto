@@ -385,7 +385,9 @@ impl AndroidAutoFrameReceiver {
                         }
                         Err(e) => return Err(e),
                     }
-                    if self.index == 6 {
+                    if self.index > 6 {
+                        return Err(std::io::Error::other(format!("Read too many bytes {}", self.index)));
+                    } else if self.index == 6 {
                         self.index = 0;
                         let len = u16::from_be_bytes([self.buf[0], self.buf[1]]);
                         let totallen = u32::from_be_bytes([self.buf[2], self.buf[3], self.buf[4], self.buf[5]]);
@@ -396,13 +398,15 @@ impl AndroidAutoFrameReceiver {
                         self.biglen.replace(totallen);
                     }
                 } else {
-                    match stream.read(&mut self.buf[self.index..]).await {
+                    match stream.read(&mut self.buf[self.index..2]).await {
                         Ok(asdf) => {
                             self.index += asdf;
                         }
                         Err(e) => return Err(e),
                     }
-                    if self.index == 2 {
+                    if self.index > 2 {
+                        return Err(std::io::Error::other(format!("Read too many bytes {}", self.index)));
+                    } else if self.index == 2 {
                         self.index = 0;
                         let len = u16::from_be_bytes([self.buf[0], self.buf[1]]);
                         self.len.replace(len);
