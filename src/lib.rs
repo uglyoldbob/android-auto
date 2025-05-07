@@ -33,6 +33,9 @@ pub trait AndroidAutoMainTrait {
     fn supports_video(&mut self) -> Option<&mut dyn AndroidAutoVideoChannelTrait> {
         None
     }
+
+    /// Retrieve the receiver so that the user can send messages to the android auto compatible device or crate
+    fn get_receiver(&mut self) -> Option<tokio::sync::mpsc::Receiver<AndroidAutoMessage>>;
 }
 
 /// This trait is implemented by users wishing to display a video stream from an android auto (phone probably).
@@ -67,9 +70,9 @@ pub use protobufmod::*;
 /// The android auto version supported
 const VERSION: (u16, u16) = (1, 1);
 
-/// A message sent or received in the android auto protocol
+/// A message sent or received over the bluetooth link for setting up wireless android auto
 #[cfg(feature = "wireless")]
-struct AndroidAutoMessage {
+pub struct AndroidAutoBluetoothRawMessage {
     /// The message type
     t: u16,
     /// The message contained in the message
@@ -210,16 +213,34 @@ impl FrameHeader {
     }
 }
 
+/// Responsible for reading the frame header once the first byte of the header is received
+struct FrameHeaderReader {
+    channel_id: ChannelId,
+}
+
+impl FrameHeaderReader {
+    /// Read the rest of the frame header
+    async fn read(&mut self, stream: &mut tokio::net::TcpStream) -> Result<FrameHeader, std::io::Error> {
+        let mut b = [0u8];
+        stream.read_exact(&mut b).await?;
+        let mut a = FrameHeaderContents::new(false, FrameHeaderType::Single, false);
+        a.0 = b[0];
+        let fh = FrameHeader {
+            channel_id: self.channel_id,
+            frame: a,
+        };
+        return Ok(fh);
+    }
+}
+
 /// Responsible for receiving frame headers in the the android auto protocol.
 struct FrameHeaderReceiver {
-    /// The channel id received for a frame header, if one has been received.
-    channel_id: Option<ChannelId>,
 }
 
 impl FrameHeaderReceiver {
     /// Construct a new self
     pub fn new() -> Self {
-        Self { channel_id: None }
+        Self { }
     }
 
     /// Read a frame header from the compatible android auto device
@@ -227,24 +248,24 @@ impl FrameHeaderReceiver {
     pub async fn read(
         &mut self,
         stream: &mut tokio::net::TcpStream,
-    ) -> Result<Option<FrameHeader>, std::io::Error> {
-        if self.channel_id.is_none() {
-            let mut b = [0u8];
-            stream.read_exact(&mut b).await?;
-            self.channel_id = ChannelId::try_from(b[0]).ok();
-        }
-        if let Some(channel_id) = &self.channel_id {
-            let mut b = [0u8];
-            stream.read_exact(&mut b).await?;
-            let mut a = FrameHeaderContents::new(false, FrameHeaderType::Single, false);
-            a.0 = b[0];
-            let fh = FrameHeader {
-                channel_id: *channel_id,
-                frame: a,
-            };
-            return Ok(Some(fh));
-        }
-        Ok(None)
+    ) -> Result<FrameHeaderReader, std::io::Error> {
+        let mut b = [0u8];
+        stream.read_exact(&mut b).await?;
+        Ok(FrameHeaderReader { channel_id: b[0] })
+    }
+}
+
+/// The types of messages that can be sent over the android auto link
+pub enum AndroidAutoMessage {
+    /// An input message
+    Input(InputMessage),
+    /// An other message
+    Other,
+}
+
+impl From<AndroidAutoMessage> for AndroidAutoFrame {
+    fn from(value: AndroidAutoMessage) -> Self {
+        value.into()
     }
 }
 
@@ -340,80 +361,80 @@ impl AndroidAutoFrameReceiver {
         header: &FrameHeader,
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
-    ) -> Result<Option<AndroidAutoFrame>, std::io::Error> {
-        if self.len.is_none() {
-            if header.frame.get_frame_type() == FrameHeaderType::First {
-                let mut p = [0u8; 6];
-                stream.read_exact(&mut p).await?;
-                let len = u16::from_be_bytes([p[0], p[1]]);
-                self.len.replace(len);
-            } else {
-                let mut p = [0u8; 2];
-                stream.read_exact(&mut p).await?;
-                let len = u16::from_be_bytes(p);
-                self.len.replace(len);
-            }
-        }
-
-        let decrypt = |ssl_stream: &mut rustls::client::ClientConnection,
-                       _len: u16,
-                       data_frame: Vec<u8>|
-         -> Result<Vec<u8>, std::io::Error> {
-            let mut plain_data = vec![0u8; data_frame.len()];
-            let mut cursor = Cursor::new(&data_frame);
-            let mut index = 0;
-            loop {
-                let asdf = ssl_stream.read_tls(&mut cursor).unwrap();
-                let _ = ssl_stream
-                    .process_new_packets()
-                    .map_err(|e| std::io::Error::other(e))?;
-                if asdf == 0 {
-                    break;
-                }
-                if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
-                    index += l;
+    ) -> Result<AndroidAutoFrame, std::io::Error> {
+        loop {
+            if self.len.is_none() {
+                if header.frame.get_frame_type() == FrameHeaderType::First {
+                    let mut p = [0u8; 6];
+                    stream.read_exact(&mut p).await?;
+                    let len = u16::from_be_bytes([p[0], p[1]]);
+                    self.len.replace(len);
+                } else {
+                    let mut p = [0u8; 2];
+                    stream.read_exact(&mut p).await?;
+                    let len = u16::from_be_bytes(p);
+                    self.len.replace(len);
                 }
             }
-            Ok(plain_data[0..index].to_vec())
-        };
 
-        if let Some(len) = self.len.take() {
-            let mut data_frame = vec![0u8; len as usize];
-            stream.read_exact(&mut data_frame).await?;
-            let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
-                let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)?
-                } else {
-                    data_frame
-                };
-                let d = data_plain.clone();
-                Some(vec![d])
-            } else {
-                let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)?
-                } else {
-                    data_frame
-                };
-                self.rx_sofar.push(data_plain);
-                if header.frame.get_frame_type() == FrameHeaderType::Last {
-                    let d = self.rx_sofar.clone();
-                    self.rx_sofar.clear();
-                    Some(d)
-                } else {
-                    None
+            let decrypt = |ssl_stream: &mut rustls::client::ClientConnection,
+                        _len: u16,
+                        data_frame: Vec<u8>|
+            -> Result<Vec<u8>, std::io::Error> {
+                let mut plain_data = vec![0u8; data_frame.len()];
+                let mut cursor = Cursor::new(&data_frame);
+                let mut index = 0;
+                loop {
+                    let asdf = ssl_stream.read_tls(&mut cursor).unwrap();
+                    let _ = ssl_stream
+                        .process_new_packets()
+                        .map_err(|e| std::io::Error::other(e))?;
+                    if asdf == 0 {
+                        break;
+                    }
+                    if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
+                        index += l;
+                    }
                 }
+                Ok(plain_data[0..index].to_vec())
             };
-            if let Some(data) = data {
-                let data: Vec<u8> = data.into_iter().flatten().collect();
-                let f = AndroidAutoFrame {
-                    header: *header,
-                    data,
+
+            if let Some(len) = self.len.take() {
+                let mut data_frame = vec![0u8; len as usize];
+                stream.read_exact(&mut data_frame).await?;
+                let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
+                    let data_plain = if header.frame.get_encryption() {
+                        decrypt(ssl_stream, len, data_frame)?
+                    } else {
+                        data_frame
+                    };
+                    let d = data_plain.clone();
+                    Some(vec![d])
+                } else {
+                    let data_plain = if header.frame.get_encryption() {
+                        decrypt(ssl_stream, len, data_frame)?
+                    } else {
+                        data_frame
+                    };
+                    self.rx_sofar.push(data_plain);
+                    if header.frame.get_frame_type() == FrameHeaderType::Last {
+                        let d = self.rx_sofar.clone();
+                        self.rx_sofar.clear();
+                        Some(d)
+                    } else {
+                        None
+                    }
                 };
-                let f = Some(f);
-                return Ok(f);
+                if let Some(data) = data {
+                    let data: Vec<u8> = data.into_iter().flatten().collect();
+                    let f = AndroidAutoFrame {
+                        header: *header,
+                        data,
+                    };
+                    return Ok(f);
+                }
             }
         }
-        Ok(None)
     }
 }
 
@@ -427,14 +448,14 @@ enum AndroidAutoBluetoothMessage {
 
 impl AndroidAutoBluetoothMessage {
     /// Build an `AndroidAutoMessage` from self
-    fn as_message(&self) -> AndroidAutoMessage {
+    fn as_message(&self) -> AndroidAutoBluetoothRawMessage {
         use protobuf::Message;
         match self {
-            AndroidAutoBluetoothMessage::SocketInfoRequest(m) => AndroidAutoMessage {
+            AndroidAutoBluetoothMessage::SocketInfoRequest(m) => AndroidAutoBluetoothRawMessage {
                 t: Bluetooth::MessageId::BLUETOOTH_SOCKET_INFO_REQUEST as u16,
                 message: m.write_to_bytes().unwrap(),
             },
-            AndroidAutoBluetoothMessage::NetworkInfoMessage(m) => AndroidAutoMessage {
+            AndroidAutoBluetoothMessage::NetworkInfoMessage(m) => AndroidAutoBluetoothRawMessage {
                 t: Bluetooth::MessageId::BLUETOOTH_NETWORK_INFO_MESSAGE as u16,
                 message: m.write_to_bytes().unwrap(),
             },
@@ -442,8 +463,8 @@ impl AndroidAutoBluetoothMessage {
     }
 }
 
-impl From<AndroidAutoMessage> for Vec<u8> {
-    fn from(value: AndroidAutoMessage) -> Self {
+impl From<AndroidAutoBluetoothRawMessage> for Vec<u8> {
+    fn from(value: AndroidAutoBluetoothRawMessage) -> Self {
         let mut buf = Vec::new();
         let b = value.message.len() as u16;
         let a = b.to_be_bytes();
@@ -1427,7 +1448,7 @@ impl AndriodAutoBluettothServer {
                     s.set_port(network2.port as u32);
 
                     let m1 = AndroidAutoBluetoothMessage::SocketInfoRequest(s);
-                    let m: AndroidAutoMessage = m1.as_message();
+                    let m: AndroidAutoBluetoothRawMessage = m1.as_message();
                     let mdata: Vec<u8> = m.into();
                     let _ = write.write_all(&mdata).await;
                     loop {
@@ -1457,7 +1478,7 @@ impl AndriodAutoBluettothServer {
                                     response.set_ap_type(network2.ap_type);
                                     let response =
                                         AndroidAutoBluetoothMessage::NetworkInfoMessage(response);
-                                    let m: AndroidAutoMessage = response.as_message();
+                                    let m: AndroidAutoBluetoothRawMessage = response.as_message();
                                     let mdata: Vec<u8> = m.into();
                                     let _ = write.write_all(&mdata).await;
                                 }
@@ -1487,6 +1508,16 @@ impl AndriodAutoBluettothServer {
         config: AndroidAutoConfiguration,
         main: &mut T,
     ) -> Result<(), String> {
+        let message_recv = main.get_receiver();
+        let message_fut = async move {
+            match message_recv {
+                Some(mut a) => a.recv().await,
+                None => loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            }
+        };
+        tokio::pin!(message_fut);
         let mut root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let aautocertder = {
@@ -1562,123 +1593,36 @@ impl AndriodAutoBluettothServer {
         let d2: Vec<u8> = d.build_vec(Some(&mut ssl_client)).await;
         stream.write_all(&d2).await.map_err(|e| e.to_string())?;
         let mut fr2 = AndroidAutoFrameReceiver::new();
+        let fr = FrameHeaderReceiver::new();
+        tokio::pin!(fr);
         loop {
             let mut skip_ping = true;
-            let mut fr = FrameHeaderReceiver::new();
-            let f = loop {
-                match fr.read(&mut stream).await {
-                    Ok(Some(f)) => break Some(f),
-                    Err(e) => match e.kind() {
-                        std::io::ErrorKind::NotFound => todo!(),
-                        std::io::ErrorKind::PermissionDenied => todo!(),
-                        std::io::ErrorKind::ConnectionRefused => todo!(),
-                        std::io::ErrorKind::ConnectionReset => todo!(),
-                        std::io::ErrorKind::HostUnreachable => todo!(),
-                        std::io::ErrorKind::NetworkUnreachable => todo!(),
-                        std::io::ErrorKind::ConnectionAborted => todo!(),
-                        std::io::ErrorKind::NotConnected => todo!(),
-                        std::io::ErrorKind::AddrInUse => todo!(),
-                        std::io::ErrorKind::AddrNotAvailable => todo!(),
-                        std::io::ErrorKind::NetworkDown => todo!(),
-                        std::io::ErrorKind::BrokenPipe => todo!(),
-                        std::io::ErrorKind::AlreadyExists => todo!(),
-                        std::io::ErrorKind::WouldBlock => break None,
-                        std::io::ErrorKind::NotADirectory => todo!(),
-                        std::io::ErrorKind::IsADirectory => todo!(),
-                        std::io::ErrorKind::DirectoryNotEmpty => todo!(),
-                        std::io::ErrorKind::ReadOnlyFilesystem => todo!(),
-                        std::io::ErrorKind::StaleNetworkFileHandle => todo!(),
-                        std::io::ErrorKind::InvalidInput => todo!(),
-                        std::io::ErrorKind::InvalidData => todo!(),
-                        std::io::ErrorKind::TimedOut => todo!(),
-                        std::io::ErrorKind::WriteZero => todo!(),
-                        std::io::ErrorKind::StorageFull => todo!(),
-                        std::io::ErrorKind::NotSeekable => todo!(),
-                        std::io::ErrorKind::QuotaExceeded => todo!(),
-                        std::io::ErrorKind::Deadlock => todo!(),
-                        std::io::ErrorKind::CrossesDevices => todo!(),
-                        std::io::ErrorKind::TooManyLinks => todo!(),
-                        std::io::ErrorKind::ArgumentListTooLong => todo!(),
-                        std::io::ErrorKind::Interrupted => todo!(),
-                        std::io::ErrorKind::Unsupported => todo!(),
-                        std::io::ErrorKind::UnexpectedEof => todo!(),
-                        std::io::ErrorKind::OutOfMemory => todo!(),
-                        std::io::ErrorKind::Other => todo!("{}", e.to_string()),
-                        _ => return Err("Unknown error reading frame header".to_string()),
-                    },
-                    _ => break None,
+            tokio::select! {
+                Some(m) = &mut message_fut => {
+                    let f: AndroidAutoFrame = m.into();
+                    let d2: Vec<u8> = f.build_vec(Some(&mut ssl_client)).await;
+                    stream.write_all(&d2).await.map_err(|e| e.to_string())?;
                 }
-            };
-            let f2 = if let Some(f) = f {
-                loop {
-                    match fr2.read(&f, &mut stream, &mut ssl_client).await {
-                        Ok(Some(f2)) => break Some(f2),
-                        Ok(None) => {
-                            skip_ping = true;
-                            break None;
-                        }
-                        Err(e) => match e.kind() {
-                            std::io::ErrorKind::NotFound => todo!(),
-                            std::io::ErrorKind::PermissionDenied => todo!(),
-                            std::io::ErrorKind::ConnectionRefused => todo!(),
-                            std::io::ErrorKind::ConnectionReset => todo!(),
-                            std::io::ErrorKind::HostUnreachable => todo!(),
-                            std::io::ErrorKind::NetworkUnreachable => todo!(),
-                            std::io::ErrorKind::ConnectionAborted => todo!(),
-                            std::io::ErrorKind::NotConnected => todo!(),
-                            std::io::ErrorKind::AddrInUse => todo!(),
-                            std::io::ErrorKind::AddrNotAvailable => todo!(),
-                            std::io::ErrorKind::NetworkDown => todo!(),
-                            std::io::ErrorKind::BrokenPipe => todo!(),
-                            std::io::ErrorKind::AlreadyExists => todo!(),
-                            std::io::ErrorKind::WouldBlock => {}
-                            std::io::ErrorKind::NotADirectory => todo!(),
-                            std::io::ErrorKind::IsADirectory => todo!(),
-                            std::io::ErrorKind::DirectoryNotEmpty => todo!(),
-                            std::io::ErrorKind::ReadOnlyFilesystem => todo!(),
-                            std::io::ErrorKind::StaleNetworkFileHandle => todo!(),
-                            std::io::ErrorKind::InvalidInput => todo!(),
-                            std::io::ErrorKind::InvalidData => todo!(),
-                            std::io::ErrorKind::TimedOut => todo!(),
-                            std::io::ErrorKind::WriteZero => todo!(),
-                            std::io::ErrorKind::StorageFull => todo!(),
-                            std::io::ErrorKind::NotSeekable => todo!(),
-                            std::io::ErrorKind::QuotaExceeded => todo!(),
-                            std::io::ErrorKind::FileTooLarge => todo!(),
-                            std::io::ErrorKind::ResourceBusy => todo!(),
-                            std::io::ErrorKind::ExecutableFileBusy => todo!(),
-                            std::io::ErrorKind::Deadlock => todo!(),
-                            std::io::ErrorKind::CrossesDevices => todo!(),
-                            std::io::ErrorKind::TooManyLinks => todo!(),
-                            std::io::ErrorKind::ArgumentListTooLong => todo!(),
-                            std::io::ErrorKind::Interrupted => todo!(),
-                            std::io::ErrorKind::Unsupported => todo!(),
-                            std::io::ErrorKind::UnexpectedEof => todo!(),
-                            std::io::ErrorKind::OutOfMemory => todo!(),
-                            std::io::ErrorKind::Other => todo!("{}", e.to_string()),
-                            _ => return Err("Unknown error reading frame header".to_string()),
-                        },
+                Ok(mut p) = fr.read(&mut stream) => {
+                    let fh = p.read(&mut stream).await.map_err(|e| e.to_string())?;
+                    let frame : AndroidAutoFrame = fr2.read(&fh, &mut stream, &mut ssl_client).await.map_err(|e| e.to_string())?;
+                    if let Some(handler) = channel_handlers.get_mut(frame.header.channel_id as usize) {
+                        handler
+                            .receive_data(
+                                frame,
+                                &mut skip_ping,
+                                &mut stream,
+                                &mut ssl_client,
+                                &config,
+                                main,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        panic!("Unknown channel id: {:?}", frame.header.channel_id);
                     }
                 }
-            } else {
-                None
-            };
-            if let Some(f2) = f2 {
-                if let Some(handler) = channel_handlers.get_mut(f2.header.channel_id as usize) {
-                    handler
-                        .receive_data(
-                            f2,
-                            &mut skip_ping,
-                            &mut stream,
-                            &mut ssl_client,
-                            &config,
-                            main,
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    panic!("Unknown channel id: {:?}", f2.header.channel_id);
-                }
+                else => break,
             }
         }
         log::info!("Disconnecting normally");
