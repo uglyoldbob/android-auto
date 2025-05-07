@@ -379,7 +379,7 @@ impl AndroidAutoFrameReceiver {
         loop {
             if self.len.is_none() {
                 if header.frame.get_frame_type() == FrameHeaderType::First {
-                    match stream.read(&mut self.buf).await {
+                    match stream.read(&mut self.buf[self.index..]).await {
                         Ok(asdf) => {
                             self.index += asdf;
                         }
@@ -396,7 +396,7 @@ impl AndroidAutoFrameReceiver {
                         self.biglen.replace(totallen);
                     }
                 } else {
-                    match stream.read(&mut self.buf).await {
+                    match stream.read(&mut self.buf[self.index..]).await {
                         Ok(asdf) => {
                             self.index += asdf;
                         }
