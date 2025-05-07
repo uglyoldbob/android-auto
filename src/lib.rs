@@ -1611,6 +1611,7 @@ impl AndriodAutoBluettothServer {
             let mut skip_ping = true;
             tokio::select! {
                 Some(m) = &mut message_fut => {
+                    log::error!("Parsing message to send direct to the android auto user");
                     let f: AndroidAutoFrame = m.into();
                     let d2: Vec<u8> = f.build_vec(Some(&mut ssl_client)).await;
                     stream.write_all(&d2).await.map_err(|e| format!("Failure writing user response: {}", e))?;
