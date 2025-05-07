@@ -1322,19 +1322,19 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
 
 /// An object that allows multiple tasks to send or receive frames
 struct StreamMux<T: AsyncRead + AsyncWrite + Unpin> {
-    inner: Arc<std::sync::Mutex<T>>,
+    inner: Arc<tokio::sync::Mutex<T>>,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> StreamMux<T> {
     /// Construct a new self
     pub fn new(stream: T) -> Self{
         Self {
-            inner: Arc::new(std::sync::Mutex::new(stream)),
+            inner: Arc::new(tokio::sync::Mutex::new(stream)),
         }
     }
 
     pub async fn read_frame(&self, fr2: &mut AndroidAutoFrameReceiver, ssl_stream: &mut rustls::client::ClientConnection) -> Result<AndroidAutoFrame, String> {
-        let mut s = self.inner.lock().unwrap();
+        let mut s = self.inner.lock().await;
         loop {
             let mut fr = FrameHeaderReceiver::new();
             let f = loop {
@@ -1438,7 +1438,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> StreamMux<T> {
     }
 
     pub async fn write_frame(&self, f: &[u8]) -> Result<(), std::io::Error> {
-        let mut s = self.inner.lock().unwrap();
+        let mut s = self.inner.lock().await;
         s.write_all(f).await
     }
 }
