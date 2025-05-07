@@ -65,7 +65,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     log::info!("Got channel open request for video: {:?}", m);
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     if let Some(v) = main.supports_video() {
-                        m2.set_status(if v.setup_video().await { Wifi::status::Enum::OK } else { Wifi::status::Enum::FAIL });
+                        m2.set_status(if v.setup_video().await.is_ok() { Wifi::status::Enum::OK } else { Wifi::status::Enum::FAIL });
                     }
                     else {
                         m2.set_status(Wifi::status::Enum::FAIL);
@@ -83,9 +83,8 @@ impl ChannelHandlerTrait for VideoChannelHandler {
             match msg2 {
                 AvChannelMessage::MediaIndicationAck(_, _) => unimplemented!(),
                 AvChannelMessage::MediaIndication(_chan, time, data) => {
-                    log::error!("Got media with timestamp {:?}", time);
                     if let Some(a) = main.supports_video() {
-                        a.receive_video(data).await;
+                        a.receive_video(data, time).await;
                         let mut m2 = Wifi::AVMediaAckIndication::new();
                         m2.set_session(0);
                         m2.set_value(1);
@@ -95,9 +94,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                         stream.write_all(&d2).await?;
                     }
                 }
-                AvChannelMessage::SetupRequest(chan, m) => {
-                    log::info!("Got channel setup request for channel {:?}: {:?}", chan, m);
-
+                AvChannelMessage::SetupRequest(_chan, _m) => {
                     let mut m2 = Wifi::AVChannelSetupResponse::new();
                     m2.set_max_unacked(1);
                     m2.set_media_status(Wifi::avchannel_setup_status::Enum::OK);
@@ -105,29 +102,32 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     let d: AndroidAutoFrame = AvChannelMessage::SetupResponse(channel, m2).into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
                     stream.write_all(&d2).await?;
-
-                    let mut m2 = Wifi::VideoFocusIndication::new();
-                    m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
-                    m2.set_unrequested(false);
-                    let d: AndroidAutoFrame =
-                        AvChannelMessage::VideoIndicationResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    if let Some(v) = main.supports_video() {
+                        v.wait_for_focus().await;
+                        let mut m2 = Wifi::VideoFocusIndication::new();
+                        m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
+                        m2.set_unrequested(false);
+                        let d: AndroidAutoFrame =
+                            AvChannelMessage::VideoIndicationResponse(channel, m2).into();
+                        let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
+                        stream.write_all(&d2).await?;
+                    }
                 }
                 AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
                 AvChannelMessage::VideoFocusRequest(_chan, m) => {
-                    log::error!("Got video focus request {:?}", m);
-                    let mut m2 = Wifi::VideoFocusIndication::new();
-                    m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
-                    m2.set_unrequested(false);
-                    let d: AndroidAutoFrame =
-                        AvChannelMessage::VideoIndicationResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    if let Some(v) = main.supports_video() {
+                        let mut m2 = Wifi::VideoFocusIndication::new();
+                        v.set_focus(m.focus_mode() == Wifi::video_focus_mode::Enum::FOCUSED).await;
+                        m2.set_focus_mode(m.focus_mode());
+                        m2.set_unrequested(false);
+                        let d: AndroidAutoFrame =
+                            AvChannelMessage::VideoIndicationResponse(channel, m2).into();
+                        let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
+                        stream.write_all(&d2).await?;
+                    }
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
-                AvChannelMessage::StartIndication(chan, _) => {
-                    log::error!("Got start indication for channel {:?}", chan);
+                AvChannelMessage::StartIndication(_chan, _) => {
                 }
             }
             return Ok(());
