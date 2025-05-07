@@ -26,6 +26,8 @@ use bluetooth::*;
 mod sensor;
 use sensor::*;
 
+pub use protobuf;
+
 /// The base trait for crate users to implement
 pub trait AndroidAutoMainTrait {
     /// This allows the incoming video stream to be processed
