@@ -346,6 +346,8 @@ impl AndroidAutoFrame {
 struct AndroidAutoFrameReceiver {
     /// The length of the frame to receive, if it is known yet
     len: Option<u16>,
+    /// The length of the big frame to receive.
+    biglen: Option<u32>,
     /// The data received so far for a multi-frame packet
     rx_sofar: Vec<Vec<u8>>,
 }
@@ -355,6 +357,7 @@ impl AndroidAutoFrameReceiver {
     fn new() -> Self {
         Self {
             len: None,
+            biglen: None,
             rx_sofar: Vec::new(),
         }
     }
@@ -378,6 +381,7 @@ impl AndroidAutoFrameReceiver {
                         log::error!("Total length should be {:x}", totallen);
                     }
                     self.len.replace(len);
+                    self.biglen.replace(totallen);
                 } else {
                     let mut p = [0u8; 2];
                     stream.read_exact(&mut p).await.inspect_err(|e| log::error!("Failure reading 2 byte frame length: {}", e))?;
@@ -431,6 +435,10 @@ impl AndroidAutoFrameReceiver {
                     self.rx_sofar.push(data_plain);
                     if header.frame.get_frame_type() == FrameHeaderType::Last {
                         let d = self.rx_sofar.clone();
+                        if Some(d.len() as u32) != self.biglen {
+                            log::error!("Failure to read the correct length of big packet: {:x}/{:x?}", d.len(), self.biglen);
+                            return Err(std::io::Error::other("Failure in big packet length"));
+                        }
                         self.rx_sofar.clear();
                         Some(d)
                     } else {
