@@ -160,9 +160,9 @@ impl From<u8> for FrameHeaderType {
     }
 }
 
-impl Into<u8> for FrameHeaderType {
-    fn into(self) -> u8 {
-        self as u8
+impl From<FrameHeaderType> for u8 {
+    fn from(value: FrameHeaderType) -> Self {
+        value as u8
     }
 }
 
@@ -437,18 +437,18 @@ impl AndroidAutoBluetoothMessage {
     }
 }
 
-impl Into<Vec<u8>> for AndroidAutoMessage {
-    fn into(self) -> Vec<u8> {
+impl From<AndroidAutoMessage> for Vec<u8> {
+    fn from(value: AndroidAutoMessage) -> Self {
         let mut buf = Vec::new();
-        let b = self.message.len() as u16;
+        let b = value.message.len() as u16;
         let a = b.to_be_bytes();
         buf.push(a[0]);
         buf.push(a[1]);
-        let a = self.t.to_be_bytes();
+        let a = value.t.to_be_bytes();
         buf.push(a[0]);
         buf.push(a[1]);
-        for b in &self.message {
-            buf.push(*b);
+        for b in value.message {
+            buf.push(b);
         }
         buf
     }
@@ -487,11 +487,11 @@ enum InputMessage {
     BindingResponse(ChannelId, Wifi::BindingResponse),
 }
 
-impl Into<AndroidAutoFrame> for InputMessage {
-    fn into(self) -> AndroidAutoFrame {
-        match self {
-            Self::BindingRequest(_, _) => unimplemented!(),
-            Self::BindingResponse(chan, m) => {
+impl From<InputMessage> for AndroidAutoFrame {
+    fn from(value: InputMessage) -> Self {
+        match value {
+            InputMessage::BindingRequest(_, _) => unimplemented!(),
+            InputMessage::BindingResponse(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::input_channel_message::Enum::BINDING_RESPONSE as u16;
                 let t = t.to_be_bytes();
@@ -543,7 +543,7 @@ struct InputChannelHandler {}
 impl ChannelHandlerTrait for InputChannelHandler {
     fn build_channel(
         &self,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
@@ -567,13 +567,13 @@ impl ChannelHandlerTrait for InputChannelHandler {
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
-        main: &mut T,
+        _main: &mut T,
     ) -> Result<(), std::io::Error> {
         let channel = msg.header.channel_id;
         let msg2: Result<InputMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
-                InputMessage::BindingRequest(chan, m) => {
+                InputMessage::BindingRequest(chan, _m) => {
                     let mut m2 = Wifi::BindingResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
                     let d: AndroidAutoFrame = InputMessage::BindingResponse(chan, m2).into();
@@ -658,7 +658,7 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
-        main: &mut T,
+        _main: &mut T,
     ) -> Result<(), std::io::Error> {
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
@@ -694,8 +694,8 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
                     stream.write_all(&d2).await?;
                 }
-                AvChannelMessage::SetupResponse(chan, m) => unimplemented!(),
-                AvChannelMessage::VideoFocusRequest(chan, m) => {
+                AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
+                AvChannelMessage::VideoFocusRequest(_chan, _m) => {
                     let mut m2 = Wifi::VideoFocusIndication::new();
                     m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
                     m2.set_unrequested(false);
@@ -724,12 +724,12 @@ enum MediaStatusMessage {
     Invalid,
 }
 
-impl Into<AndroidAutoFrame> for MediaStatusMessage {
-    fn into(self) -> AndroidAutoFrame {
-        match self {
-            Self::Playback(_, _) => todo!(),
-            Self::Metadata(_, _) => todo!(),
-            Self::Invalid => unimplemented!(),
+impl From<MediaStatusMessage> for AndroidAutoFrame {
+    fn from(value: MediaStatusMessage) -> Self {
+        match value {
+            MediaStatusMessage::Playback(_, _) => todo!(),
+            MediaStatusMessage::Metadata(_, _) => todo!(),
+            MediaStatusMessage::Invalid => unimplemented!(),
         }
     }
 }
@@ -747,14 +747,14 @@ impl TryFrom<&AndroidAutoFrame> for MediaStatusMessage {
                     let m = Wifi::MediaInfoChannelPlaybackData::parse_from_bytes(&value.data);
                     match m {
                         Ok(m) => Ok(Self::Playback(value.header.channel_id, m)),
-                        Err(e) => Ok(Self::Invalid),
+                        Err(_) => Ok(Self::Invalid),
                     }
                 }
                 Wifi::media_info_channel_message::Enum::METADATA => {
                     let m = Wifi::MediaInfoChannelMetadataData::parse_from_bytes(&value.data);
                     match m {
                         Ok(m) => Ok(Self::Metadata(value.header.channel_id, m)),
-                        Err(e) => Ok(Self::Invalid),
+                        Err(_) => Ok(Self::Invalid),
                     }
                 }
                 Wifi::media_info_channel_message::Enum::NONE => todo!(),
@@ -771,7 +771,7 @@ struct MediaStatusChannelHandler {}
 impl ChannelHandlerTrait for MediaStatusChannelHandler {
     fn build_channel(
         &self,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
@@ -791,7 +791,7 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
-        main: &mut T,
+        _main: &mut T,
     ) -> Result<(), std::io::Error> {
         let channel = msg.header.channel_id;
         let msg2: Result<MediaStatusMessage, String> = (&msg).try_into();
@@ -855,7 +855,7 @@ struct NavigationChannelHandler {}
 impl ChannelHandlerTrait for NavigationChannelHandler {
     fn build_channel(
         &self,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
@@ -996,8 +996,8 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
                     stream.write_all(&d2).await?;
                 }
-                AvChannelMessage::SetupResponse(chan, m) => unimplemented!(),
-                AvChannelMessage::VideoFocusRequest(chan, m) => {
+                AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
+                AvChannelMessage::VideoFocusRequest(_chan, _m) => {
                     let mut m2 = Wifi::VideoFocusIndication::new();
                     m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
                     m2.set_unrequested(false);
@@ -1070,7 +1070,7 @@ impl From<AvChannelMessage> for AndroidAutoFrame {
                 }
             }
             AvChannelMessage::MediaIndication(_, _, _) => unimplemented!(),
-            AvChannelMessage::VideoFocusRequest(chan, m) => unimplemented!(),
+            AvChannelMessage::VideoFocusRequest(_chan, _m) => unimplemented!(),
             AvChannelMessage::VideoIndicationResponse(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::avchannel_message::Enum::VIDEO_FOCUS_INDICATION as u16;
@@ -1162,7 +1162,7 @@ struct SystemAudioChannelHandler {}
 impl ChannelHandlerTrait for SystemAudioChannelHandler {
     fn build_channel(
         &self,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
@@ -1190,7 +1190,7 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
-        main: &mut T,
+        _main: &mut T,
     ) -> Result<(), std::io::Error> {
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
@@ -1440,7 +1440,7 @@ impl AndriodAutoBluettothServer {
                     let m1 = AndroidAutoBluetoothMessage::SocketInfoRequest(s);
                     let m: AndroidAutoMessage = m1.as_message();
                     let mdata: Vec<u8> = m.into();
-                    let r1 = write.write_all(&mdata).await;
+                    let _ = write.write_all(&mdata).await;
                     loop {
                         let mut ty = [0u8; 2];
                         let mut len = [0u8; 2];
@@ -1470,7 +1470,7 @@ impl AndriodAutoBluettothServer {
                                         AndroidAutoBluetoothMessage::NetworkInfoMessage(response);
                                     let m: AndroidAutoMessage = response.as_message();
                                     let mdata: Vec<u8> = m.into();
-                                    let r1 = write.write_all(&mdata).await;
+                                    let _ = write.write_all(&mdata).await;
                                 }
                                 Bluetooth::MessageId::BLUETOOTH_SOCKET_INFO_RESPONSE => {
                                     let message =

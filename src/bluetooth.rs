@@ -20,11 +20,11 @@ pub enum BluetoothMessage {
     Auth,
 }
 
-impl Into<AndroidAutoFrame> for BluetoothMessage {
-    fn into(self) -> AndroidAutoFrame {
-        match self {
-            Self::PairingRequest(_, _) => todo!(),
-            Self::PairingResponse(chan, m) => {
+impl From<BluetoothMessage> for AndroidAutoFrame {
+    fn from(value: BluetoothMessage) -> Self {
+        match value {
+            BluetoothMessage::PairingRequest(_, _) => todo!(),
+            BluetoothMessage::PairingResponse(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::bluetooth_channel_message::Enum::PAIRING_RESPONSE as u16;
                 let t = t.to_be_bytes();
@@ -40,7 +40,7 @@ impl Into<AndroidAutoFrame> for BluetoothMessage {
                     data: m,
                 }
             }
-            Self::Auth => unimplemented!(),
+            BluetoothMessage::Auth => unimplemented!(),
         }
     }
 }
@@ -103,7 +103,7 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
-        main: &mut T,
+        _main: &mut T,
     ) -> Result<(), std::io::Error> {
         let channel = msg.header.channel_id;
         let msg2: Result<BluetoothMessage, String> = (&msg).try_into();
@@ -111,7 +111,7 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
             match msg2 {
                 BluetoothMessage::PairingResponse(_, _) => unimplemented!(),
                 BluetoothMessage::Auth => unimplemented!(),
-                BluetoothMessage::PairingRequest(chan, m) => {
+                BluetoothMessage::PairingRequest(_chan, _m) => {
                     let mut m2 = Wifi::BluetoothPairingResponse::new();
                     m2.set_already_paired(true);
                     m2.set_status(Wifi::bluetooth_pairing_status::Enum::OK);

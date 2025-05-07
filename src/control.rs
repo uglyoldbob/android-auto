@@ -119,9 +119,9 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
 }
 
 #[cfg(feature = "wireless")]
-impl Into<AndroidAutoFrame> for AndroidAutoControlMessage {
-    fn into(self) -> AndroidAutoFrame {
-        match self {
+impl From<AndroidAutoControlMessage> for AndroidAutoFrame {
+    fn from(value: AndroidAutoControlMessage) -> Self {
+        match value {
             AndroidAutoControlMessage::PingResponse(m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::ControlMessage::PING_RESPONSE as u16;
@@ -292,7 +292,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
         config: &AndroidAutoConfiguration,
-        main: &mut T,
+        _main: &mut T,
     ) -> Result<(), std::io::Error> {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -339,7 +339,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                     stream.write_all(&d2).await?;
                 }
                 AndroidAutoControlMessage::ServiceDiscoveryResponse(_) => unimplemented!(),
-                AndroidAutoControlMessage::ServiceDiscoveryRequest(m) => {
+                AndroidAutoControlMessage::ServiceDiscoveryRequest(_m) => {
                     let mut m2 = Wifi::ServiceDiscoveryResponse::new();
                     m2.set_car_model(config.unit.car_model.clone());
                     m2.set_can_play_native_media_during_vr(false);

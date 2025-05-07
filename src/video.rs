@@ -2,11 +2,10 @@
 
 use super::{
     AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait,
-    AvChannelMessage, ChannelHandlerTrait, ChannelId, FrameHeader, FrameHeaderContents,
-    FrameHeaderType,
+    AvChannelMessage, ChannelHandlerTrait, ChannelId,
 };
 use crate::Wifi;
-use protobuf::{Enum, Message};
+use protobuf::Message;
 use tokio::io::AsyncWriteExt;
 
 /// The handler for the video channel on android auto
@@ -15,7 +14,7 @@ pub struct VideoChannelHandler {}
 impl ChannelHandlerTrait for VideoChannelHandler {
     fn build_channel(
         &self,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
     ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = Wifi::ChannelDescriptor::new();
@@ -78,7 +77,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AvChannelMessage::MediaIndicationAck(_, _) => unimplemented!(),
-                AvChannelMessage::MediaIndication(chan, time, data) => {
+                AvChannelMessage::MediaIndication(_chan, time, data) => {
                     log::error!("Got media with timestamp {:?}", time);
                     if let Some(a) = main.supports_video() {
                         a.receive_video(data).await;
@@ -111,8 +110,8 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
                     stream.write_all(&d2).await?;
                 }
-                AvChannelMessage::SetupResponse(chan, m) => unimplemented!(),
-                AvChannelMessage::VideoFocusRequest(chan, m) => {
+                AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
+                AvChannelMessage::VideoFocusRequest(_chan, m) => {
                     log::error!("Got video focus request {:?}", m);
                     let mut m2 = Wifi::VideoFocusIndication::new();
                     m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);

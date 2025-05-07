@@ -20,11 +20,11 @@ pub enum SensorMessage {
     Event(ChannelId, Wifi::SensorEventIndication),
 }
 
-impl Into<AndroidAutoFrame> for SensorMessage {
-    fn into(self) -> AndroidAutoFrame {
-        match self {
-            Self::SensorStartRequest(_, _) => todo!(),
-            Self::SensorStartResponse(chan, m) => {
+impl From<SensorMessage> for AndroidAutoFrame {
+    fn from(value: SensorMessage) -> Self {
+        match value {
+            SensorMessage::SensorStartRequest(_, _) => todo!(),
+            SensorMessage::SensorStartResponse(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::sensor_channel_message::Enum::SENSOR_START_RESPONSE as u16;
                 let t = t.to_be_bytes();
@@ -40,7 +40,7 @@ impl Into<AndroidAutoFrame> for SensorMessage {
                     data: m,
                 }
             }
-            Self::Event(chan, m) => {
+            SensorMessage::Event(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::sensor_channel_message::Enum::SENSOR_EVENT_INDICATION as u16;
                 let t = t.to_be_bytes();
@@ -92,7 +92,7 @@ pub struct SensorChannelHandler {}
 impl ChannelHandlerTrait for SensorChannelHandler {
     fn build_channel(
         &self,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
     ) -> Option<ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
@@ -126,15 +126,15 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         stream: &mut tokio::net::TcpStream,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
-        main: &mut T,
+        _main: &mut T,
     ) -> Result<(), std::io::Error> {
         let channel = msg.header.channel_id;
         let msg2: Result<SensorMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
-                SensorMessage::Event(chan, m) => unimplemented!(),
+                SensorMessage::Event(_chan, _m) => unimplemented!(),
                 SensorMessage::SensorStartResponse(_, _) => unimplemented!(),
-                SensorMessage::SensorStartRequest(chan, m) => {
+                SensorMessage::SensorStartRequest(_chan, m) => {
                     log::error!("Sensor start request {:?}", m);
 
                     let mut m2 = Wifi::SensorStartResponseMessage::new();

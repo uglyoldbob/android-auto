@@ -4,7 +4,7 @@ fn main() {
     protobuf_codegen::Codegen::new()
         .out_dir(out_dir)
         .protoc()
-        .includes(&["protobuf"])
+        .includes(["protobuf"])
         .input("protobuf/Bluetooth.proto")
         .input("protobuf/Wifi.proto")
         .cargo_out_dir("protobuf")

@@ -47,9 +47,9 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoCommonMessage {
 }
 
 #[cfg(feature = "wireless")]
-impl Into<AndroidAutoFrame> for AndroidAutoCommonMessage {
-    fn into(self) -> AndroidAutoFrame {
-        match self {
+impl From<AndroidAutoCommonMessage> for AndroidAutoFrame {
+    fn from(value: AndroidAutoCommonMessage) -> Self {
+        match value {
             AndroidAutoCommonMessage::ChannelOpenResponse(chan, m) => {
                 log::error!("Channel open response {}", m.is_initialized());
                 let mut data = m.write_to_bytes().unwrap();
