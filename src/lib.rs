@@ -344,6 +344,10 @@ impl AndroidAutoFrame {
 
 /// Responsible for receiving a full frame from the compatible android auto device
 struct AndroidAutoFrameReceiver {
+    /// The temporary buffer for receiving the length
+    buf: [u8; 6],
+    /// The index into the temporary buffer
+    index: usize,
     /// The length of the frame to receive, if it is known yet
     len: Option<u16>,
     /// The length of the big frame to receive.
@@ -356,6 +360,8 @@ impl AndroidAutoFrameReceiver {
     /// Construct a new frame receiver
     fn new() -> Self {
         Self {
+            buf: [0; 6],
+            index: 0,
             len: None,
             biglen: None,
             rx_sofar: Vec::new(),
@@ -376,23 +382,36 @@ impl AndroidAutoFrameReceiver {
                     log::error!("Packet frame header is {:?}", header.frame);
                 }
                 if header.frame.get_frame_type() == FrameHeaderType::First {
-                    let mut p = [0u8; 6];
-                    stream.read_exact(&mut p).await.inspect_err(|e| log::error!("Failure reading 6 byte frame length: {}", e))?;
-                    let len = u16::from_be_bytes([p[0], p[1]]);
-                    let totallen = u32::from_be_bytes([p[2], p[3], p[4], p[5]]);
-                    if dump {
-                        log::error!("Total length should be {:x}", totallen);
+                    match stream.read(&mut self.buf).await {
+                        Ok(asdf) => {
+                            self.index += asdf;
+                        }
+                        Err(e) => return Err(e),
                     }
-                    self.len.replace(len);
-                    self.biglen.replace(totallen);
+                    if self.index == 6 {
+                        self.index = 0;
+                        let len = u16::from_be_bytes([self.buf[0], self.buf[1]]);
+                        let totallen = u32::from_be_bytes([self.buf[2], self.buf[3], self.buf[4], self.buf[5]]);
+                        if dump {
+                            log::error!("Total length should be {:x}", totallen);
+                        }
+                        self.len.replace(len);
+                        self.biglen.replace(totallen);
+                    }
                 } else {
-                    let mut p = [0u8; 2];
-                    stream.read_exact(&mut p).await.inspect_err(|e| log::error!("Failure reading 2 byte frame length: {}", e))?;
-                    let len = u16::from_be_bytes(p);
-                    self.len.replace(len);
+                    match stream.read(&mut self.buf).await {
+                        Ok(asdf) => {
+                            self.index += asdf;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                    if self.index == 2 {
+                        self.index = 0;
+                        let len = u16::from_be_bytes([self.buf[0], self.buf[1]]);
+                        self.len.replace(len);
+                    }
                 }
             }
-
             let decrypt = |ssl_stream: &mut rustls::client::ClientConnection,
                            _len: u16,
                            data_frame: Vec<u8>|
@@ -417,6 +436,9 @@ impl AndroidAutoFrameReceiver {
 
             if let Some(len) = self.len.take() {
                 let mut data_frame = vec![0u8; len as usize];
+                if dump {
+                    log::error!("Trying to read {:x} bytes", len);
+                }
                 stream.read_exact(&mut data_frame).await?;
                 if dump {
                     log::error!("Read encrypted? data {:x} {:x} {:02x?}", self.rx_sofar.len(), len, data_frame);
