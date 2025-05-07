@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 async-trait = "0.1.88"
 bitfield = "0.19.0"
-bluetooth-rust = { path = "../bluetooth", optional = true }
+bluetooth-rust = { git = "https://github.com/uglyoldbob/bluetooth-rust.git", optional = true }
 enum_dispatch = "0.3.13"
 futures = "0.3.30"
 log = "0.4.27"
