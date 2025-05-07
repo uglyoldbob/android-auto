@@ -119,11 +119,10 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait>(
+    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         &mut self,
         msg: AndroidAutoFrame,
-        _skip_ping: &mut bool,
-        stream: &mut tokio::net::TcpStream,
+        stream: &super::StreamMux<U>,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
@@ -140,7 +139,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                     let d: AndroidAutoFrame =
                         SensorMessage::SensorStartResponse(channel, m2).into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
 
                     let mut m3 = Wifi::SensorEventIndication::new();
                     match m.sensor_type() {
@@ -160,7 +159,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                     };
                     let d: AndroidAutoFrame = SensorMessage::Event(channel, m3).into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
                 }
             }
             return Ok(());
@@ -175,7 +174,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                     let d: AndroidAutoFrame =
                         AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
                 }
             }
             return Ok(());

@@ -47,11 +47,10 @@ impl ChannelHandlerTrait for VideoChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait>(
+    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         &mut self,
         msg: AndroidAutoFrame,
-        _skip_ping: &mut bool,
-        stream: &mut tokio::net::TcpStream,
+        stream: &super::StreamMux<U>,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
         main: &mut T,
@@ -73,7 +72,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     let d: AndroidAutoFrame =
                         AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
                 }
             }
             return Ok(());
@@ -91,7 +90,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                         let d: AndroidAutoFrame =
                             AvChannelMessage::MediaIndicationAck(channel, m2).into();
                         let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                        stream.write_all(&d2).await?;
+                        stream.write_frame(&d2).await?;
                     }
                 }
                 AvChannelMessage::SetupRequest(_chan, _m) => {
@@ -101,7 +100,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     m2.configs.push(0);
                     let d: AndroidAutoFrame = AvChannelMessage::SetupResponse(channel, m2).into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
                     if let Some(v) = main.supports_video() {
                         v.wait_for_focus().await;
                         let mut m2 = Wifi::VideoFocusIndication::new();
@@ -110,7 +109,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                         let d: AndroidAutoFrame =
                             AvChannelMessage::VideoIndicationResponse(channel, m2).into();
                         let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                        stream.write_all(&d2).await?;
+                        stream.write_frame(&d2).await?;
                     }
                 }
                 AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
@@ -123,7 +122,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                         let d: AndroidAutoFrame =
                             AvChannelMessage::VideoIndicationResponse(channel, m2).into();
                         let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                        stream.write_all(&d2).await?;
+                        stream.write_frame(&d2).await?;
                     }
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),

@@ -7,7 +7,7 @@ use super::{
 };
 use crate::Wifi;
 use protobuf::{EnumOrUnknown, Message};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 /// A message about bluetooth operations
 #[derive(Debug)]
@@ -95,11 +95,10 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait>(
+    async fn receive_data<T: AndroidAutoMainTrait, U: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         msg: AndroidAutoFrame,
-        _skip_ping: &mut bool,
-        stream: &mut tokio::net::TcpStream,
+        stream: &super::StreamMux<U>,
         ssl_stream: &mut rustls::client::ClientConnection,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
@@ -116,7 +115,7 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
                     m2.set_status(Wifi::bluetooth_pairing_status::Enum::OK);
                     let d: AndroidAutoFrame = BluetoothMessage::PairingResponse(channel, m2).into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
                 }
             }
             return Ok(());
@@ -131,7 +130,7 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
                     let d: AndroidAutoFrame =
                         AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
                 }
             }
             return Ok(());

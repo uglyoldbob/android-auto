@@ -285,11 +285,10 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         None
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait>(
+    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         &mut self,
         msg: AndroidAutoFrame,
-        skip_ping: &mut bool,
-        stream: &mut tokio::net::TcpStream,
+        stream: &super::StreamMux<U>,
         ssl_stream: &mut rustls::client::ClientConnection,
         config: &AndroidAutoConfiguration,
         _main: &mut T,
@@ -298,7 +297,6 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AndroidAutoControlMessage::PingResponse(_) => {
-                    *skip_ping = true;
                 }
                 AndroidAutoControlMessage::PingRequest(a) => {
                     let mut m = Wifi::PingResponse::new();
@@ -306,7 +304,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                     let m = AndroidAutoControlMessage::PingResponse(m);
                     let d: AndroidAutoFrame = m.into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
                 }
                 AndroidAutoControlMessage::AudioFocusResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::AudioFocusRequest(m) => {
@@ -336,7 +334,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                     let d: AndroidAutoFrame =
                         AndroidAutoControlMessage::AudioFocusResponse(m2).into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
                 }
                 AndroidAutoControlMessage::ServiceDiscoveryResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::ServiceDiscoveryRequest(_m) => {
@@ -362,7 +360,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                     let m3 = AndroidAutoControlMessage::ServiceDiscoveryResponse(m2);
                     let d: AndroidAutoFrame = m3.into();
                     let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_all(&d2).await?;
+                    stream.write_frame(&d2).await?;
                 }
                 AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
                 AndroidAutoControlMessage::SslHandshake(data) => {
@@ -378,14 +376,14 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                             let m = AndroidAutoControlMessage::SslHandshake(s);
                             let d: AndroidAutoFrame = m.into();
                             let d2: Vec<u8> = d.build_vec(None).await;
-                            stream.write_all(&d2).await?;
+                            stream.write_frame(&d2).await?;
                         }
                     }
                     if !ssl_stream.is_handshaking() {
                         let m = AndroidAutoControlMessage::SslAuthComplete(true);
                         let d: AndroidAutoFrame = m.into();
                         let d2: Vec<u8> = d.build_vec(None).await;
-                        stream.write_all(&d2).await?;
+                        stream.write_frame(&d2).await?;
                     }
                 }
                 AndroidAutoControlMessage::VersionRequest => unimplemented!(),
@@ -406,7 +404,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                             let m = AndroidAutoControlMessage::SslHandshake(s);
                             let d: AndroidAutoFrame = m.into();
                             let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                            stream.write_all(&d2).await?;
+                            stream.write_frame(&d2).await?;
                         }
                     }
                 }
