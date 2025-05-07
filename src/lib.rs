@@ -378,7 +378,7 @@ impl AndroidAutoFrameReceiver {
     ) -> Result<AndroidAutoFrame, std::io::Error> {
         loop {
             if self.len.is_none() {
-                if header.frame.get_frame_type() == FrameHeaderType::First || self.biglen.is_some(){
+                if header.frame.get_frame_type() == FrameHeaderType::First && self.biglen.is_none() {
                     match stream.read(&mut self.buf[self.index..]).await {
                         Ok(asdf) => {
                             self.index += asdf;
