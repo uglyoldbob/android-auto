@@ -75,7 +75,7 @@ const VERSION: (u16, u16) = (1, 1);
 /// The types of messages that can be sent over the android auto link
 pub enum AndroidAutoMessage {
     /// An input message
-    Input(InputMessage),
+    Input(Wifi::InputEventIndication),
     /// An other message
     Other,
 }
@@ -504,7 +504,7 @@ trait ChannelHandlerTrait {
 
 /// A message about binding input buttons on a compatible android auto head unit
 #[derive(Debug)]
-pub enum InputMessage {
+enum InputMessage {
     /// A message requesting input buttons to be bound
     BindingRequest(ChannelId, Wifi::BindingRequest),
     /// A message that responds to a binding request, indicating success or failure of the request
