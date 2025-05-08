@@ -16,7 +16,7 @@ enum_dispatch = "0.3.13"
 futures = "0.3.30"
 log = "0.4.27"
 protobuf = "3.7.2"
-rustls = { version = "0.23.26", features = ["ring"] }
+rustls = { version = "0.23.26" }
 serde = {version = "1.0.219", features = ["derive"]}
 tokio = { version = "1.40.0", features = ["full"], optional = true }
 webpki-roots = "0.26.9"

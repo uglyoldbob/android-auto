@@ -1961,7 +1961,7 @@ impl AndriodAutoBluettothServer {
         config: AndroidAutoConfiguration,
         mut main: T,
     ) -> Result<(), String> {
-        let cp = rustls::crypto::ring::default_provider();
+        let cp = rustls::crypto::aws_lc_rs::default_provider();
         cp.install_default().expect("Failed to set ssl provider");
 
         log::debug!(
