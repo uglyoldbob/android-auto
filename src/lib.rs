@@ -1447,10 +1447,12 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
     pub async fn start_handshake(&self) -> Result<(), std::io::Error> {
         let mut w = self.writer.lock().await;
         let mut ssl_stream = self.ssl_client.lock().await;
-        let mut s = Vec::new();
-        if ssl_stream.wants_write() {
+        log::error!("Starting ssl handshake");
+        while ssl_stream.wants_write() {
+            let mut s = Vec::new();
             let l = ssl_stream.write_tls(&mut s);
             if l.is_ok() {
+                log::error!("RELAYING SSL HANDSHAKE TX DATA {:02x?}", s);
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
                 w.write_all(&d2).await?;
@@ -1463,7 +1465,9 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
     pub async fn do_handshake(&self, data: Vec<u8>) -> Result<(), std::io::Error> {
         let mut w = self.writer.lock().await;
         let mut ssl_stream = self.ssl_client.lock().await;
+        log::error!("Continuing ssl handshake");
         if ssl_stream.wants_read() {
+            log::error!("RELAYING SSL HANDSHAKE DATA {:02x?}", data);
             let mut dc = std::io::Cursor::new(data);
             let _ = ssl_stream.read_tls(&mut dc);
             let _ = ssl_stream.process_new_packets();
@@ -1472,11 +1476,13 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
             let mut s = Vec::new();
             let l = ssl_stream.write_tls(&mut s);
             if l.is_ok() {
+                log::error!("RELAYING SSL HANDSHAKE TX DATA {:02x?}", s);
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
                 w.write_all(&d2).await?;
             }
         }
+        log::error!("SSL RX {} TX {}", ssl_stream.wants_read(), ssl_stream.wants_write());
         Ok(())
     }
 

@@ -369,6 +369,9 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                             .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
                             .await?;
                     }
+                    else {
+                        log::error!("Still need to do more handshaking?");
+                    }
                 }
                 AndroidAutoControlMessage::VersionRequest => unimplemented!(),
                 AndroidAutoControlMessage::VersionResponse {
