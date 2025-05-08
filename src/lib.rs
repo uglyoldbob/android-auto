@@ -1452,7 +1452,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
             let mut s = Vec::new();
             let l = ssl_stream.write_tls(&mut s);
             if l.is_ok() {
-                log::error!("RELAYING SSL HANDSHAKE TX DATA {:02x?}", s);
+                log::error!("RELAYING SSL HANDSHAKE TX DATA {} {:02x?}", s.len(), s);
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
                 w.write_all(&d2).await?;
@@ -1468,15 +1468,17 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
         log::error!("Continuing ssl handshake");
         if ssl_stream.wants_read() {
             log::error!("RELAYING SSL HANDSHAKE DATA {:02x?}", data);
+            let len = data.len();
             let mut dc = std::io::Cursor::new(data);
-            let _ = ssl_stream.read_tls(&mut dc);
+            let a = ssl_stream.read_tls(&mut dc);
+            log::error!("Relayed {:?} bytes of rx handshake out of {}", a, len);
             let _ = ssl_stream.process_new_packets();
         }
         if ssl_stream.wants_write() {
             let mut s = Vec::new();
             let l = ssl_stream.write_tls(&mut s);
             if l.is_ok() {
-                log::error!("RELAYING SSL HANDSHAKE TX DATA {:02x?}", s);
+                log::error!("RELAYING SSL HANDSHAKE TX DATA {} {:02x?}", s.len(), s);
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
                 w.write_all(&d2).await?;
