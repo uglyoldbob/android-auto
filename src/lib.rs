@@ -83,7 +83,6 @@ pub enum AndroidAutoMessage {
 /// The sendable form of an `AndroidAutoMessage`
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SendableAndroidAutoMessage {
-    ty: u16,
     channel: u8,
     data: Vec<u8>,
 }
@@ -105,11 +104,19 @@ impl AndroidAutoMessage {
     /// TODO: Figure out how to relay the correct channel id to this function
     pub fn sendable(self) -> SendableAndroidAutoMessage {
         match self {
-            Self::Input(m) => SendableAndroidAutoMessage {
-                ty: Wifi::input_channel_message::Enum::INPUT_EVENT_INDICATION as u16,
-                channel: 1,
-                data: m.write_to_bytes().unwrap(),
-            },
+            Self::Input(m) => {
+                let mut data = m.write_to_bytes().unwrap();
+                let t = Wifi::input_channel_message::Enum::INPUT_EVENT_INDICATION as u16;
+                let t = t.to_be_bytes();
+                let mut m = Vec::new();
+                m.push(t[0]);
+                m.push(t[1]);
+                m.append(&mut data);
+                SendableAndroidAutoMessage {
+                    channel: 1,
+                    data: m,
+                }
+            }
             Self::Other => todo!(),
         }
     }
