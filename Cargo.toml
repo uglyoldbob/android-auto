@@ -2,11 +2,14 @@
 name = "android-auto"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/uglyoldbob/android-auto.git"
+publish = ["crates-io"]
+license = "GPL-3.0-or-later"
 
 [dependencies]
 async-trait = "0.1.88"
 bitfield = "0.19.0"
-bluetooth-rust = { git = "https://github.com/uglyoldbob/bluetooth-rust.git", optional = true }
+bluetooth-rust = { version = "0.1.0", optional = true }
 enum_dispatch = "0.3.13"
 futures = "0.3.30"
 log = "0.4.27"
