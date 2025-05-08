@@ -1,5 +1,6 @@
 [package]
 name = "android-auto"
+description = "A crate for implementing the android auto protocol."
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/uglyoldbob/android-auto.git"
