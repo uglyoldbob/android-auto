@@ -6,7 +6,6 @@ use crate::{
     AndroidAutoConfiguration, AndroidAutoMainTrait, ChannelHandlerTrait, ChannelId, StreamMux, Wifi,
 };
 use protobuf::{Enum, Message};
-use tokio::io::AsyncWriteExt;
 
 /// A control message on the android auto protocol
 #[cfg(feature = "wireless")]
@@ -296,7 +295,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         config: &AndroidAutoConfiguration,
-        main: &mut T,
+        _main: &mut T,
     ) -> Result<(), std::io::Error> {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -364,7 +363,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                 }
                 AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
                 AndroidAutoControlMessage::SslHandshake(data) => {
-                    stream.do_handshake(data).await;
+                    stream.do_handshake(data).await?;
                     if !stream.is_handshaking().await {
                         stream
                             .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
@@ -382,7 +381,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         return Err(std::io::Error::other("Version mismatch"));
                     }
                     log::info!("Android auto client version: {}.{}", major, minor);
-                    stream.start_handshake().await;
+                    stream.start_handshake().await?;
                 }
             }
         } else {

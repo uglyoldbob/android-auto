@@ -7,7 +7,6 @@ use super::{
 };
 use crate::{StreamMux, Wifi};
 use protobuf::{EnumOrUnknown, Message};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 /// A message about bluetooth operations
 #[derive(Debug)]
@@ -157,7 +156,7 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
                     status: _,
                 } => unimplemented!(),
             }
-            return Ok(());
+            //return Ok(());
         }
         todo!("{:02x?} {:?} {:?} {:?}", msg, msg2, msg3, msg4);
     }

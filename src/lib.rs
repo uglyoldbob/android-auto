@@ -83,7 +83,9 @@ pub enum AndroidAutoMessage {
 /// The sendable form of an `AndroidAutoMessage`
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SendableAndroidAutoMessage {
+    /// The channel id to send the message to
     channel: u8,
+    /// The message body to send
     data: Vec<u8>,
 }
 
@@ -119,12 +121,6 @@ impl AndroidAutoMessage {
             }
             Self::Other => todo!(),
         }
-    }
-}
-
-impl From<AndroidAutoMessage> for AndroidAutoFrame {
-    fn from(value: AndroidAutoMessage) -> Self {
-        value.into()
     }
 }
 
@@ -427,7 +423,7 @@ impl AndroidAutoFrameReceiver {
                 let asdf = ssl_stream.read_tls(&mut cursor).unwrap();
                 let _ = ssl_stream
                     .process_new_packets()
-                    .map_err(|e| std::io::Error::other(e))?;
+                    .map_err(std::io::Error::other)?;
                 if asdf == 0 {
                     break;
                 }
@@ -708,7 +704,7 @@ impl ChannelHandlerTrait for InputChannelHandler {
                     status: _,
                 } => unimplemented!(),
             }
-            return Ok(());
+            //return Ok(());
         }
         todo!();
     }
@@ -935,7 +931,7 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
                     status: _,
                 } => unimplemented!(),
             }
-            return Ok(());
+            //return Ok(());
         }
         todo!("{:?} {:?} {:?}", msg2, msg3, msg4);
     }
@@ -1014,7 +1010,7 @@ impl ChannelHandlerTrait for NavigationChannelHandler {
                     status: _,
                 } => unimplemented!(),
             }
-            return Ok(());
+            //return Ok(());
         }
         todo!("{:x?}", msg);
     }
@@ -1405,7 +1401,7 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
                     status: _,
                 } => unimplemented!(),
             }
-            return Ok(());
+            //return Ok(());
         }
         todo!("{:x?}", msg);
     }
@@ -1413,8 +1409,11 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
 
 /// An object that allows multiple tasks to send or receive frames
 struct StreamMux<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
+    /// The reader for receiving frames from the android auto device
     reader: Arc<tokio::sync::Mutex<T>>,
+    /// The writer for sending frames to the android auto device
     writer: Arc<tokio::sync::Mutex<U>>,
+    /// The object used for tls communication
     ssl_client: Arc<tokio::sync::Mutex<rustls::client::ClientConnection>>,
 }
 
@@ -1445,7 +1444,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
     }
 
     /// Start the ssl handshake process
-    pub async fn start_handshake(&self) {
+    pub async fn start_handshake(&self) -> Result<(), std::io::Error> {
         let mut w = self.writer.lock().await;
         let mut ssl_stream = self.ssl_client.lock().await;
         let mut s = Vec::new();
@@ -1454,13 +1453,14 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
             if l.is_ok() {
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
-                w.write_all(&d2).await;
+                w.write_all(&d2).await?;
             }
         }
+        Ok(())
     }
 
     /// Continue the handshake process
-    pub async fn do_handshake(&self, data: Vec<u8>) {
+    pub async fn do_handshake(&self, data: Vec<u8>) -> Result<(), std::io::Error> {
         let mut w = self.writer.lock().await;
         let mut ssl_stream = self.ssl_client.lock().await;
         if ssl_stream.wants_read() {
@@ -1474,9 +1474,10 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
             if l.is_ok() {
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
-                w.write_all(&d2).await;
+                w.write_all(&d2).await?;
             }
         }
+        Ok(())
     }
 
     /// Read a frame from the stream
@@ -1534,7 +1535,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
             let f2 = if let Some(f) = f {
                 let mut ssl_stream = self.ssl_client.lock().await;
                 loop {
-                    match fr2.read(&f, &mut *s, &mut *ssl_stream).await {
+                    match fr2.read(&f, &mut *s, &mut ssl_stream).await {
                         Ok(Some(f2)) => break Some(f2),
                         Ok(None) => {
                             break None;
@@ -1681,7 +1682,9 @@ enum ChannelHandler {
     MediaAudio(MediaAudioChannelHandler),
 }
 
+/// This is a wrapper around a join handle, it aborts the handle when it is dropped.
 struct DroppingJoinHandle<T> {
+    /// The handle for the struct
     handle: tokio::task::JoinHandle<T>,
 }
 
@@ -1844,15 +1847,11 @@ impl AndriodAutoBluettothServer {
         let sm2 = sm.clone();
         let _task2 = if let Some(mut msgr) = message_recv {
             let jh = tokio::task::spawn(async move {
-                loop {
-                    if let Some(m) = msgr.recv().await {
-                        let check = sm2.write_sendable(m).await;
-                        if check.is_err() {
-                            log::info!("Error passing message: {:?}", check.err());
-                            return;
-                        }
-                    } else {
-                        break;
+                while let Some(m) = msgr.recv().await {
+                    let check = sm2.write_sendable(m).await;
+                    if check.is_err() {
+                        log::info!("Error passing message: {:?}", check.err());
+                        return;
                     }
                 }
             });
@@ -1908,8 +1907,6 @@ impl AndriodAutoBluettothServer {
                 }
             }
         }
-        log::info!("Disconnecting normally");
-        Ok(())
     }
 
     /// Listen for connections over the network for an android auto capable head unit.

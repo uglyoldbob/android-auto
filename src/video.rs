@@ -6,18 +6,17 @@ use super::{
 };
 use crate::{StreamMux, Wifi};
 use protobuf::Message;
-use tokio::io::AsyncWriteExt;
 
 /// The handler for the video channel on android auto
 pub struct VideoChannelHandler {
+    /// The active session for a video stream
     session: Option<i32>,
 }
 
 impl VideoChannelHandler {
+    /// construct a new self
     pub fn new() -> Self {
-        Self {
-            session: None,
-        }
+        Self { session: None }
     }
 }
 
@@ -102,7 +101,10 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     if let Some(a) = main.supports_video() {
                         a.receive_video(data, time).await;
                         let mut m2 = Wifi::AVMediaAckIndication::new();
-                        m2.set_session(self.session.ok_or(std::io::Error::other("Missing video session"))?);
+                        m2.set_session(
+                            self.session
+                                .ok_or(std::io::Error::other("Missing video session"))?,
+                        );
                         m2.set_value(1);
                         stream
                             .write_frame(AvChannelMessage::MediaIndicationAck(channel, m2).into())

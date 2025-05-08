@@ -7,7 +7,6 @@ use super::{
 };
 use crate::{StreamMux, Wifi};
 use protobuf::Message;
-use tokio::io::AsyncWriteExt;
 
 /// A message about sensors in android auto
 #[derive(Debug)]
@@ -200,7 +199,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                     status: _,
                 } => unimplemented!(),
             }
-            return Ok(());
+            //return Ok(());
         }
         todo!("{:x?}", msg);
     }
