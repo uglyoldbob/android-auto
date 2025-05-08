@@ -46,7 +46,7 @@ pub trait AndroidAutoVideoChannelTrait: AndroidAutoMainTrait {
     /// Parse a chunk of h264 video data
     async fn receive_video(&mut self, data: Vec<u8>, timestamp: Option<u64>);
     /// Setup the video device to receive h264 video, if anything is required. Return Ok(()) if setup was good, Err(()) if it was not good
-    async fn setup_video(&mut self) -> Result<(),()>;
+    async fn setup_video(&mut self) -> Result<(), ()>;
     /// Tear down the video receiver, may be called without the setup having been called
     async fn teardown_video(&mut self);
     /// Wait for the video to be in focus
@@ -80,14 +80,36 @@ pub enum AndroidAutoMessage {
     Other,
 }
 
-/// The senable form of an `AndroidAutoMessage`
-pub type SendableAndroidAutoMessage = Vec<u8>;
+/// The sendable form of an `AndroidAutoMessage`
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SendableAndroidAutoMessage {
+    ty: u16,
+    channel: u8,
+    data: Vec<u8>,
+}
+
+impl From<SendableAndroidAutoMessage> for AndroidAutoFrame {
+    fn from(value: SendableAndroidAutoMessage) -> Self {
+        Self {
+            header: FrameHeader {
+                channel_id: value.channel,
+                frame: FrameHeaderContents::new(true, FrameHeaderType::Single, false),
+            },
+            data: value.data,
+        }
+    }
+}
 
 impl AndroidAutoMessage {
     /// Convert the message to something that can be sent
+    /// TODO: Figure out how to relay the correct channel id to this function
     pub fn sendable(self) -> SendableAndroidAutoMessage {
         match self {
-            Self::Input(m) => m.write_to_bytes().unwrap(),
+            Self::Input(m) => SendableAndroidAutoMessage {
+                ty: Wifi::input_channel_message::Enum::INPUT_EVENT_INDICATION as u16,
+                channel: 1,
+                data: m.write_to_bytes().unwrap(),
+            },
             Self::Other => todo!(),
         }
     }
@@ -256,7 +278,7 @@ impl FrameHeaderReceiver {
 
     /// Read a frame header from the compatible android auto device
     /// Returns Ok(Some(p)) when a full frame header is actually received.
-    pub async fn read<T: AsyncRead + AsyncWrite + Unpin>(
+    pub async fn read<T: AsyncRead + Unpin>(
         &mut self,
         stream: &mut T,
     ) -> Result<Option<FrameHeader>, std::io::Error> {
@@ -367,7 +389,7 @@ impl AndroidAutoFrameReceiver {
     }
 
     /// Read the contents of a frame using the details specified in the header that has already been read.
-    async fn read<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn read<T: tokio::io::AsyncRead + Unpin>(
         &mut self,
         header: &FrameHeader,
         stream: &mut T,
@@ -495,13 +517,16 @@ impl From<AndroidAutoRawBluetoothMessage> for Vec<u8> {
 #[enum_dispatch::enum_dispatch]
 trait ChannelHandlerTrait {
     /// Process data received that is specific to this channel. Return an error for any packets that were not handled that should cause communication to stop.
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
-        config: &AndroidAutoConfiguration,
-        main: &mut T,
+        stream: &StreamMux<U, V>,
+        _config: &AndroidAutoConfiguration,
+        _main: &mut T,
     ) -> Result<(), std::io::Error>;
 
     /// Construct the channeldescriptor with the channel handler so it can be conveyed to the compatible android auto device
@@ -615,11 +640,14 @@ impl ChannelHandlerTrait for InputChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
+        stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
@@ -630,9 +658,9 @@ impl ChannelHandlerTrait for InputChannelHandler {
                 InputMessage::BindingRequest(chan, _m) => {
                     let mut m2 = Wifi::BindingResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame = InputMessage::BindingResponse(chan, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(InputMessage::BindingResponse(chan, m2).into())
+                        .await?;
                 }
                 InputMessage::BindingResponse(_, _) => unimplemented!(),
                 InputMessage::InputEvent(_, _) => unimplemented!(),
@@ -646,10 +674,11 @@ impl ChannelHandlerTrait for InputChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(
+                            AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
+                        )
+                        .await?;
                 }
             }
             return Ok(());
@@ -705,11 +734,14 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
+        stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
@@ -721,10 +753,11 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(
+                            AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
+                        )
+                        .await?;
                 }
             }
             return Ok(());
@@ -741,19 +774,18 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
                     m2.set_max_unacked(10);
                     m2.set_media_status(Wifi::avchannel_setup_status::Enum::OK);
                     m2.configs.push(0);
-                    let d: AndroidAutoFrame = AvChannelMessage::SetupResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(AvChannelMessage::SetupResponse(channel, m2).into())
+                        .await?;
                 }
                 AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
                 AvChannelMessage::VideoFocusRequest(_chan, _m) => {
                     let mut m2 = Wifi::VideoFocusIndication::new();
                     m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
                     m2.set_unrequested(false);
-                    let d: AndroidAutoFrame =
-                        AvChannelMessage::VideoIndicationResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(AvChannelMessage::VideoIndicationResponse(channel, m2).into())
+                        .await?;
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
                 AvChannelMessage::StartIndication(_, _) => {}
@@ -835,11 +867,14 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
+        stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
@@ -866,10 +901,11 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(
+                            AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
+                        )
+                        .await?;
                 }
             }
             return Ok(());
@@ -925,11 +961,14 @@ impl ChannelHandlerTrait for NavigationChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
+        stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
@@ -941,10 +980,11 @@ impl ChannelHandlerTrait for NavigationChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(
+                            AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
+                        )
+                        .await?;
                 }
             }
             return Ok(());
@@ -1000,11 +1040,14 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
+        stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
@@ -1016,10 +1059,11 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(
+                            AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
+                        )
+                        .await?;
                 }
             }
             return Ok(());
@@ -1036,19 +1080,18 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
                     m2.set_max_unacked(10);
                     m2.set_media_status(Wifi::avchannel_setup_status::Enum::OK);
                     m2.configs.push(0);
-                    let d: AndroidAutoFrame = AvChannelMessage::SetupResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(AvChannelMessage::SetupResponse(channel, m2).into())
+                        .await?;
                 }
                 AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
                 AvChannelMessage::VideoFocusRequest(_chan, _m) => {
                     let mut m2 = Wifi::VideoFocusIndication::new();
                     m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
                     m2.set_unrequested(false);
-                    let d: AndroidAutoFrame =
-                        AvChannelMessage::VideoIndicationResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(AvChannelMessage::VideoIndicationResponse(channel, m2).into())
+                        .await?;
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
                 AvChannelMessage::StartIndication(_, _) => {}
@@ -1221,11 +1264,14 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
+        stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
@@ -1237,10 +1283,11 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(
+                            AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
+                        )
+                        .await?;
                 }
             }
             return Ok(());
@@ -1257,19 +1304,18 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
                     m2.set_max_unacked(10);
                     m2.set_media_status(Wifi::avchannel_setup_status::Enum::OK);
                     m2.configs.push(0);
-                    let d: AndroidAutoFrame = AvChannelMessage::SetupResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(AvChannelMessage::SetupResponse(channel, m2).into())
+                        .await?;
                 }
                 AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
                 AvChannelMessage::VideoFocusRequest(_chan, _m) => {
                     let mut m2 = Wifi::VideoFocusIndication::new();
                     m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
                     m2.set_unrequested(false);
-                    let d: AndroidAutoFrame =
-                        AvChannelMessage::VideoIndicationResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(AvChannelMessage::VideoIndicationResponse(channel, m2).into())
+                        .await?;
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
                 AvChannelMessage::StartIndication(_, _) => {}
@@ -1306,11 +1352,14 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
+        stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
@@ -1322,10 +1371,11 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(
+                            AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
+                        )
+                        .await?;
                 }
             }
             return Ok(());
@@ -1355,20 +1405,79 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
 }
 
 /// An object that allows multiple tasks to send or receive frames
-struct StreamMux<T: AsyncRead + AsyncWrite + Unpin> {
-    inner: Arc<tokio::sync::Mutex<T>>,
+struct StreamMux<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
+    reader: Arc<tokio::sync::Mutex<T>>,
+    writer: Arc<tokio::sync::Mutex<U>>,
+    ssl_client: Arc<tokio::sync::Mutex<rustls::client::ClientConnection>>,
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin> StreamMux<T> {
-    /// Construct a new self
-    pub fn new(stream: T) -> Self{
+impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> Clone for StreamMux<T, U> {
+    fn clone(&self) -> Self {
         Self {
-            inner: Arc::new(tokio::sync::Mutex::new(stream)),
+            reader: self.reader.clone(),
+            writer: self.writer.clone(),
+            ssl_client: self.ssl_client.clone(),
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
+    /// Construct a new self
+    pub fn new(sr: T, ss: U, ssl_client: rustls::client::ClientConnection) -> Self {
+        Self {
+            reader: Arc::new(tokio::sync::Mutex::new(sr)),
+            writer: Arc::new(tokio::sync::Mutex::new(ss)),
+            ssl_client: Arc::new(tokio::sync::Mutex::new(ssl_client)),
         }
     }
 
-    pub async fn read_frame(&self, fr2: &mut AndroidAutoFrameReceiver, ssl_stream: &mut rustls::client::ClientConnection) -> Result<AndroidAutoFrame, String> {
-        let mut s = self.inner.lock().await;
+    /// Is the stream currently in handshake process?
+    pub async fn is_handshaking(&self) -> bool {
+        let ssl_stream = self.ssl_client.lock().await;
+        ssl_stream.is_handshaking()
+    }
+
+    /// Start the ssl handshake process
+    pub async fn start_handshake(&self) {
+        let mut w = self.writer.lock().await;
+        let mut ssl_stream = self.ssl_client.lock().await;
+        let mut s = Vec::new();
+        if ssl_stream.wants_write() {
+            let l = ssl_stream.write_tls(&mut s);
+            if l.is_ok() {
+                let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
+                let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
+                w.write_all(&d2).await;
+            }
+        }
+    }
+
+    /// Continue the handshake process
+    pub async fn do_handshake(&self, data: Vec<u8>) {
+        let mut w = self.writer.lock().await;
+        let mut ssl_stream = self.ssl_client.lock().await;
+        if ssl_stream.wants_read() {
+            let mut dc = std::io::Cursor::new(data);
+            let _ = ssl_stream.read_tls(&mut dc);
+            let _ = ssl_stream.process_new_packets();
+        }
+        if ssl_stream.wants_write() {
+            let mut s = Vec::new();
+            let l = ssl_stream.write_tls(&mut s);
+            if l.is_ok() {
+                let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
+                let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
+                w.write_all(&d2).await;
+            }
+        }
+    }
+
+    /// Read a frame from the stream
+    pub async fn read_frame(
+        &self,
+        fr2: &mut AndroidAutoFrameReceiver,
+    ) -> Result<AndroidAutoFrame, String> {
+        let mut s = self.reader.lock().await;
         loop {
             let mut fr = FrameHeaderReceiver::new();
             let f = loop {
@@ -1416,8 +1525,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> StreamMux<T> {
                 }
             };
             let f2 = if let Some(f) = f {
+                let mut ssl_stream = self.ssl_client.lock().await;
                 loop {
-                    match fr2.read(&f, &mut *s, ssl_stream).await {
+                    match fr2.read(&f, &mut *s, &mut *ssl_stream).await {
                         Ok(Some(f2)) => break Some(f2),
                         Ok(None) => {
                             break None;
@@ -1474,9 +1584,24 @@ impl<T: AsyncRead + AsyncWrite + Unpin> StreamMux<T> {
         }
     }
 
-    pub async fn write_frame(&self, f: &[u8]) -> Result<(), std::io::Error> {
-        let mut s = self.inner.lock().await;
-        s.write_all(f).await
+    /// Write a frame to the stream, encrypting if necessary
+    pub async fn write_frame(&self, f: AndroidAutoFrame) -> Result<(), std::io::Error> {
+        let mut s = self.writer.lock().await;
+        let mut ssl_stream = self.ssl_client.lock().await;
+        let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
+        s.write_all(&d2).await
+    }
+
+    /// Write a frame to the stream, encrypting if necessary
+    pub async fn write_sendable(
+        &self,
+        f: SendableAndroidAutoMessage,
+    ) -> Result<(), std::io::Error> {
+        let mut s = self.writer.lock().await;
+        let mut ssl_stream = self.ssl_client.lock().await;
+        let f: AndroidAutoFrame = f.into();
+        let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
+        s.write_all(&d2).await
     }
 }
 
@@ -1547,6 +1672,16 @@ enum ChannelHandler {
     MediaStatus(MediaStatusChannelHandler),
     Input(InputChannelHandler),
     MediaAudio(MediaAudioChannelHandler),
+}
+
+struct DroppingJoinHandle<T> {
+    handle: tokio::task::JoinHandle<T>,
+}
+
+impl<T> Drop for DroppingJoinHandle<T> {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
 }
 
 impl AndriodAutoBluettothServer {
@@ -1657,20 +1792,6 @@ impl AndriodAutoBluettothServer {
         config: AndroidAutoConfiguration,
         main: &mut T,
     ) -> Result<(), String> {
-        let sm = StreamMux::new(stream);
-        let message_recv = main.get_receiver();
-        if let Some(mut msgr) = message_recv {
-            tokio::task::spawn(async move {
-                loop {
-                    if let Some(m) = msgr.recv().await {
-                        log::info!("Received message from user {:02x?}", m);
-                    }
-                    else {
-                        break;
-                    }
-                }
-            });
-        }
         let mut root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let aautocertder = {
@@ -1707,8 +1828,30 @@ impl AndriodAutoBluettothServer {
         ssl_client_config.dangerous().set_certificate_verifier(sver);
         let sslconfig = Arc::new(ssl_client_config);
         let server = "idontknow.com".try_into().unwrap();
-        let mut ssl_client =
+        let ssl_client =
             rustls::ClientConnection::new(sslconfig, server).expect("Failed to build ssl client");
+
+        let stream = stream.into_split();
+        let sm = StreamMux::new(stream.0, stream.1, ssl_client);
+        let message_recv = main.get_receiver();
+        let sm2 = sm.clone();
+        let _task2 = if let Some(mut msgr) = message_recv {
+            let jh = tokio::task::spawn(async move {
+                loop {
+                    if let Some(m) = msgr.recv().await {
+                        log::info!("Received message from user {:02x?}", m);
+                        if sm2.write_sendable(m).await.is_err() {
+                            return;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            });
+            Some(DroppingJoinHandle { handle: jh })
+        } else {
+            None
+        };
 
         let mut channel_handlers: Vec<ChannelHandler> = Vec::new();
         channel_handlers.push(ControlChannelHandler::new().into());
@@ -1741,22 +1884,15 @@ impl AndriodAutoBluettothServer {
             config.network.port,
             addr
         );
-        let m = AndroidAutoControlMessage::VersionRequest;
-        let d: AndroidAutoFrame = m.into();
-        let d2: Vec<u8> = d.build_vec(Some(&mut ssl_client)).await;
-        sm.write_frame(&d2).await.map_err(|e| e.to_string())?;
+        sm.write_frame(AndroidAutoControlMessage::VersionRequest.into())
+            .await
+            .map_err(|e| e.to_string())?;
         let mut fr2 = AndroidAutoFrameReceiver::new();
         loop {
-            if let Ok(f) = sm.read_frame(&mut fr2, &mut ssl_client).await {
+            if let Ok(f) = sm.read_frame(&mut fr2).await {
                 if let Some(handler) = channel_handlers.get_mut(f.header.channel_id as usize) {
                     handler
-                        .receive_data(
-                            f,
-                            &sm,
-                            &mut ssl_client,
-                            &config,
-                            main,
-                        )
+                        .receive_data(f, &sm, &config, main)
                         .await
                         .map_err(|e| e.to_string())?;
                 } else {

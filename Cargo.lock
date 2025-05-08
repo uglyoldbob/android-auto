@@ -95,6 +95,7 @@ dependencies = [
  "protobuf",
  "protobuf-codegen",
  "rustls",
+ "serde",
  "tokio",
  "webpki-roots",
 ]

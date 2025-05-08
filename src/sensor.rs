@@ -5,7 +5,7 @@ use super::{
     AndroidAutoFrame, AndroidAutoMainTrait, ChannelDescriptor, ChannelHandlerTrait, ChannelId,
     FrameHeader, FrameHeaderContents, FrameHeaderType,
 };
-use crate::Wifi;
+use crate::{StreamMux, Wifi};
 use protobuf::Message;
 use tokio::io::AsyncWriteExt;
 
@@ -119,11 +119,14 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &super::StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
+        stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         _main: &mut T,
     ) -> Result<(), std::io::Error> {
@@ -136,10 +139,9 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                 SensorMessage::SensorStartRequest(_chan, m) => {
                     let mut m2 = Wifi::SensorStartResponseMessage::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame =
-                        SensorMessage::SensorStartResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(SensorMessage::SensorStartResponse(channel, m2).into())
+                        .await?;
 
                     let mut m3 = Wifi::SensorEventIndication::new();
                     match m.sensor_type() {
@@ -157,9 +159,9 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                             todo!();
                         }
                     };
-                    let d: AndroidAutoFrame = SensorMessage::Event(channel, m3).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(SensorMessage::Event(channel, m3).into())
+                        .await?;
                 }
             }
             return Ok(());
@@ -171,10 +173,11 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
                     m2.set_status(Wifi::status::Enum::OK);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(
+                            AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
+                        )
+                        .await?;
                 }
             }
             return Ok(());

@@ -2,7 +2,9 @@
 
 use super::VERSION;
 use super::{AndroidAutoFrame, FrameHeader, FrameHeaderContents, FrameHeaderType};
-use crate::{AndroidAutoConfiguration, AndroidAutoMainTrait, ChannelHandlerTrait, ChannelId, Wifi};
+use crate::{
+    AndroidAutoConfiguration, AndroidAutoMainTrait, ChannelHandlerTrait, ChannelId, StreamMux, Wifi,
+};
 use protobuf::{Enum, Message};
 use tokio::io::AsyncWriteExt;
 
@@ -285,26 +287,27 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         None
     }
 
-    async fn receive_data<T: AndroidAutoMainTrait, U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    async fn receive_data<
+        T: AndroidAutoMainTrait,
+        U: tokio::io::AsyncRead + Unpin,
+        V: tokio::io::AsyncWrite + Unpin,
+    >(
         &mut self,
         msg: AndroidAutoFrame,
-        stream: &super::StreamMux<U>,
-        ssl_stream: &mut rustls::client::ClientConnection,
+        stream: &StreamMux<U, V>,
         config: &AndroidAutoConfiguration,
-        _main: &mut T,
+        main: &mut T,
     ) -> Result<(), std::io::Error> {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
-                AndroidAutoControlMessage::PingResponse(_) => {
-                }
+                AndroidAutoControlMessage::PingResponse(_) => {}
                 AndroidAutoControlMessage::PingRequest(a) => {
                     let mut m = Wifi::PingResponse::new();
                     m.set_timestamp(a.timestamp() + 1);
-                    let m = AndroidAutoControlMessage::PingResponse(m);
-                    let d: AndroidAutoFrame = m.into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(AndroidAutoControlMessage::PingResponse(m).into())
+                        .await?;
                 }
                 AndroidAutoControlMessage::AudioFocusResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::AudioFocusRequest(m) => {
@@ -331,10 +334,9 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         Wifi::audio_focus_state::Enum::NONE
                     };
                     m2.set_audio_focus_state(s);
-                    let d: AndroidAutoFrame =
-                        AndroidAutoControlMessage::AudioFocusResponse(m2).into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(AndroidAutoControlMessage::AudioFocusResponse(m2).into())
+                        .await?;
                 }
                 AndroidAutoControlMessage::ServiceDiscoveryResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::ServiceDiscoveryRequest(_m) => {
@@ -356,34 +358,17 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                     for s in &self.channels {
                         m2.channels.push(s.clone());
                     }
-
-                    let m3 = AndroidAutoControlMessage::ServiceDiscoveryResponse(m2);
-                    let d: AndroidAutoFrame = m3.into();
-                    let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                    stream.write_frame(&d2).await?;
+                    stream
+                        .write_frame(AndroidAutoControlMessage::ServiceDiscoveryResponse(m2).into())
+                        .await?;
                 }
                 AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
                 AndroidAutoControlMessage::SslHandshake(data) => {
-                    if ssl_stream.wants_read() {
-                        let mut dc = std::io::Cursor::new(data);
-                        let _ = ssl_stream.read_tls(&mut dc);
-                        let _ = ssl_stream.process_new_packets();
-                    }
-                    if ssl_stream.wants_write() {
-                        let mut s = Vec::new();
-                        let l = ssl_stream.write_tls(&mut s);
-                        if l.is_ok() {
-                            let m = AndroidAutoControlMessage::SslHandshake(s);
-                            let d: AndroidAutoFrame = m.into();
-                            let d2: Vec<u8> = d.build_vec(None).await;
-                            stream.write_frame(&d2).await?;
-                        }
-                    }
-                    if !ssl_stream.is_handshaking() {
-                        let m = AndroidAutoControlMessage::SslAuthComplete(true);
-                        let d: AndroidAutoFrame = m.into();
-                        let d2: Vec<u8> = d.build_vec(None).await;
-                        stream.write_frame(&d2).await?;
+                    stream.do_handshake(data).await;
+                    if !stream.is_handshaking().await {
+                        stream
+                            .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
+                            .await?;
                     }
                 }
                 AndroidAutoControlMessage::VersionRequest => unimplemented!(),
@@ -397,16 +382,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         return Err(std::io::Error::other("Version mismatch"));
                     }
                     log::info!("Android auto client version: {}.{}", major, minor);
-                    let mut s = Vec::new();
-                    if ssl_stream.wants_write() {
-                        let l = ssl_stream.write_tls(&mut s);
-                        if l.is_ok() {
-                            let m = AndroidAutoControlMessage::SslHandshake(s);
-                            let d: AndroidAutoFrame = m.into();
-                            let d2: Vec<u8> = d.build_vec(Some(ssl_stream)).await;
-                            stream.write_frame(&d2).await?;
-                        }
-                    }
+                    stream.start_handshake().await;
                 }
             }
         } else {
