@@ -1615,23 +1615,61 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
 
 /// The server verifier for android auto head units. This verifies the certificate in the android auto compatible device (probably a phone)
 #[derive(Debug)]
-struct AndroidAutoServerVerifier {
+struct AndroidAutoVerifier {
     /// The object providing most of the functionality for server verification
     base: Arc<rustls::client::WebPkiServerVerifier>,
+    /// Optional client certificate
+    client: Option<(Vec<u8>, Vec<u8>)>,
 }
 
-impl AndroidAutoServerVerifier {
+impl AndroidAutoVerifier {
     /// Build a new server verifier using the given root certificate store
     fn new(roots: Arc<rustls::RootCertStore>) -> Self {
         Self {
             base: rustls::client::WebPkiServerVerifier::builder(roots)
                 .build()
                 .unwrap(),
+            client: None,
         }
     }
 }
 
-impl rustls::client::danger::ServerCertVerifier for AndroidAutoServerVerifier {
+impl rustls::client::ResolvesClientCert for AndroidAutoVerifier {
+    fn has_certs(&self) -> bool {
+        true
+    }
+
+    fn resolve(
+            &self,
+            _root_hint_subjects: &[&[u8]],
+            _sigschemes: &[rustls::SignatureScheme],
+        ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        let (cert, key) = if let Some((a, b)) = &self.client {
+            (a.as_ref(), b.as_ref())
+        } else {
+            (cert::AAUTO_CERT.as_bytes(), cert::PRIVATE_KEY.as_bytes())
+        };
+        log::error!("Parsing certificate");
+        let cd = rustls::pki_types::CertificateDer::from_pem_slice(&cert).ok()?;
+        log::error!("Parsing private key");
+        
+        let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(&key).ok()?;
+        log::error!("Parsing key into signing key {:02x?}", key.secret_der());
+        let asdf = aws_lc_rs::rsa::KeyPair::from_der(key.secret_der());
+        if let Err(e) = &asdf {
+            log::error!("Error building signing key1: {:?}", e);
+        }
+        let akey = rustls::crypto::aws_lc_rs::sign::any_supported_type(&key);
+        if let Err(e) = &akey {
+            log::error!("Error building signing key2: {:?}", e);
+        }
+        let key = akey.ok()?;
+        log::error!("Building client resolver");
+        Some(Arc::new(rustls::sign::CertifiedKey { cert: vec![cd], key, ocsp: None, }))
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for AndroidAutoVerifier {
     fn verify_server_cert(
         &self,
         _end_entity: &rustls::pki_types::CertificateDer<'_>,
@@ -1830,11 +1868,10 @@ impl AndriodAutoBluettothServer {
             .add(aautocertder)
             .expect("Failed to load android auto server cert");
         let root_store = Arc::new(root_store);
+        let sver = Arc::new(AndroidAutoVerifier::new(root_store.clone()));
         let mut ssl_client_config = rustls::ClientConfig::builder()
             .with_root_certificates(root_store.clone())
-            .with_client_auth_cert(cert, key)
-            .unwrap();
-        let sver = Arc::new(AndroidAutoServerVerifier::new(root_store));
+            .with_client_cert_resolver(sver.clone());
         ssl_client_config.dangerous().set_certificate_verifier(sver);
         let sslconfig = Arc::new(ssl_client_config);
         let server = "idontknow.com".try_into().unwrap();
