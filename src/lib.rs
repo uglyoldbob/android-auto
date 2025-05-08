@@ -1840,9 +1840,12 @@ impl AndriodAutoBluettothServer {
                 loop {
                     if let Some(m) = msgr.recv().await {
                         log::info!("Received message from user {:02x?}", m);
-                        if sm2.write_sendable(m).await.is_err() {
+                        let check = sm2.write_sendable(m).await;
+                        if check.is_err() {
+                            log::info!("Error passing message: {:?}", check.err());
                             return;
                         }
+                        log::info!("Passed message to android auto device");
                     } else {
                         break;
                     }
