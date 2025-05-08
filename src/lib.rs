@@ -504,7 +504,7 @@ trait ChannelHandlerTrait {
 
 /// A message about binding input buttons on a compatible android auto head unit
 #[derive(Debug)]
-enum InputMessage {
+pub enum InputMessage {
     /// A message requesting input buttons to be bound
     BindingRequest(ChannelId, Wifi::BindingRequest),
     /// A message that responds to a binding request, indicating success or failure of the request
