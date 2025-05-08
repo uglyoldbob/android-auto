@@ -1846,13 +1846,11 @@ impl AndriodAutoBluettothServer {
             let jh = tokio::task::spawn(async move {
                 loop {
                     if let Some(m) = msgr.recv().await {
-                        log::info!("Received message from user {:02x?}", m);
                         let check = sm2.write_sendable(m).await;
                         if check.is_err() {
                             log::info!("Error passing message: {:?}", check.err());
                             return;
                         }
-                        log::info!("Passed message to android auto device");
                     } else {
                         break;
                     }
@@ -1869,7 +1867,7 @@ impl AndriodAutoBluettothServer {
         channel_handlers.push(SensorChannelHandler {}.into());
         if main.supports_video().is_some() {
             log::info!("Setting up video channel");
-            channel_handlers.push(VideoChannelHandler {}.into());
+            channel_handlers.push(VideoChannelHandler::new().into());
         }
         channel_handlers.push(MediaAudioChannelHandler {}.into());
         channel_handlers.push(SpeechAudioChannelHandler {}.into());
@@ -1934,6 +1932,7 @@ impl AndriodAutoBluettothServer {
             loop {
                 if let Ok((stream, addr)) = a.accept().await {
                     let config2 = config.clone();
+                    let _ = stream.set_nodelay(true);
                     if let Err(e) = Self::handle_client(stream, addr, config2, &mut main).await {
                         log::error!("Disconnect from client: {:?}", e);
                     }

@@ -9,7 +9,17 @@ use protobuf::Message;
 use tokio::io::AsyncWriteExt;
 
 /// The handler for the video channel on android auto
-pub struct VideoChannelHandler {}
+pub struct VideoChannelHandler {
+    session: Option<i32>,
+}
+
+impl VideoChannelHandler {
+    pub fn new() -> Self {
+        Self {
+            session: None,
+        }
+    }
+}
 
 impl ChannelHandlerTrait for VideoChannelHandler {
     fn build_channel(
@@ -92,7 +102,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     if let Some(a) = main.supports_video() {
                         a.receive_video(data, time).await;
                         let mut m2 = Wifi::AVMediaAckIndication::new();
-                        m2.set_session(0);
+                        m2.set_session(self.session.ok_or(std::io::Error::other("Missing video session"))?);
                         m2.set_value(1);
                         stream
                             .write_frame(AvChannelMessage::MediaIndicationAck(channel, m2).into())
@@ -135,7 +145,9 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     }
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
-                AvChannelMessage::StartIndication(_chan, _) => {}
+                AvChannelMessage::StartIndication(_chan, m) => {
+                    self.session = Some(m.session());
+                }
             }
             return Ok(());
         }
