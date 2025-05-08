@@ -37,7 +37,7 @@ pub trait AndroidAutoMainTrait {
     }
 
     /// Retrieve the receiver so that the user can send messages to the android auto compatible device or crate
-    fn get_receiver(&mut self) -> Option<tokio::sync::mpsc::Receiver<AndroidAutoMessage>>;
+    fn get_receiver(&mut self) -> Option<tokio::sync::mpsc::Receiver<SendableAndroidAutoMessage>>;
 }
 
 /// This trait is implemented by users wishing to display a video stream from an android auto (phone probably).
@@ -78,6 +78,19 @@ pub enum AndroidAutoMessage {
     Input(Wifi::InputEventIndication),
     /// An other message
     Other,
+}
+
+/// The senable form of an `AndroidAutoMessage`
+pub type SendableAndroidAutoMessage = Vec<u8>;
+
+impl AndroidAutoMessage {
+    /// Convert the message to something that can be sent
+    pub fn sendable(self) -> SendableAndroidAutoMessage {
+        match self {
+            Self::Input(m) => m.write_to_bytes().unwrap(),
+            Self::Other => todo!(),
+        }
+    }
 }
 
 impl From<AndroidAutoMessage> for AndroidAutoFrame {
@@ -1650,12 +1663,7 @@ impl AndriodAutoBluettothServer {
             tokio::task::spawn(async move {
                 loop {
                     if let Some(m) = msgr.recv().await {
-                        match m {
-                            AndroidAutoMessage::Input(m) => {
-                                log::info!("Received the input {:?} from the user", m);
-                            }
-                            AndroidAutoMessage::Other => todo!(),
-                        }
+                        log::info!("Received message from user {:02x?}", m);
                     }
                     else {
                         break;
