@@ -368,8 +368,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         stream
                             .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
                             .await?;
-                    }
-                    else {
+                    } else {
                         log::error!("Still need to do more handshaking?");
                     }
                 }

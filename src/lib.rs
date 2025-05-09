@@ -1452,7 +1452,6 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
             let mut s = Vec::new();
             let l = ssl_stream.write_tls(&mut s);
             if l.is_ok() {
-                log::error!("RELAYING SSL HANDSHAKE TX DATA {} {:02x?}", s.len(), s);
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
                 w.write_all(&d2).await?;
@@ -1467,24 +1466,25 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
         let mut ssl_stream = self.ssl_client.lock().await;
         log::error!("Continuing ssl handshake");
         if ssl_stream.wants_read() {
-            log::error!("RELAYING SSL HANDSHAKE DATA {:02x?}", data);
             let len = data.len();
             let mut dc = std::io::Cursor::new(data);
             let a = ssl_stream.read_tls(&mut dc);
-            log::error!("Relayed {:?} bytes of rx handshake out of {}", a, len);
             let _ = ssl_stream.process_new_packets();
         }
         if ssl_stream.wants_write() {
             let mut s = Vec::new();
             let l = ssl_stream.write_tls(&mut s);
             if l.is_ok() {
-                log::error!("RELAYING SSL HANDSHAKE TX DATA {} {:02x?}", s.len(), s);
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
                 w.write_all(&d2).await?;
             }
         }
-        log::error!("SSL RX {} TX {}", ssl_stream.wants_read(), ssl_stream.wants_write());
+        log::error!(
+            "SSL RX {} TX {}",
+            ssl_stream.wants_read(),
+            ssl_stream.wants_write()
+        );
         Ok(())
     }
 
@@ -1648,21 +1648,18 @@ impl rustls::client::ResolvesClientCert for AndroidAutoVerifier {
     }
 
     fn resolve(
-            &self,
-            _root_hint_subjects: &[&[u8]],
-            _sigschemes: &[rustls::SignatureScheme],
-        ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        &self,
+        _root_hint_subjects: &[&[u8]],
+        _sigschemes: &[rustls::SignatureScheme],
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
         let (cert, key) = if let Some((a, b)) = &self.client {
             (a.as_ref(), b.as_ref())
         } else {
             (cert::AAUTO_CERT.as_bytes(), cert::PRIVATE_KEY.as_bytes())
         };
-        log::error!("Parsing certificate");
         let cd = rustls::pki_types::CertificateDer::from_pem_slice(&cert).ok()?;
-        log::error!("Parsing private key");
-        
+
         let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(&key).ok()?;
-        log::error!("Parsing key into signing key {:02x?}", key.secret_der());
         let asdf = aws_lc_rs::rsa::KeyPair::from_der(key.secret_der());
         if let Err(e) = &asdf {
             log::error!("Error building signing key1: {:?}", e);
@@ -1672,8 +1669,11 @@ impl rustls::client::ResolvesClientCert for AndroidAutoVerifier {
             log::error!("Error building signing key2: {:?}", e);
         }
         let key = akey.ok()?;
-        log::error!("Building client resolver");
-        Some(Arc::new(rustls::sign::CertifiedKey { cert: vec![cd], key, ocsp: None, }))
+        Some(Arc::new(rustls::sign::CertifiedKey {
+            cert: vec![cd],
+            key,
+            ocsp: None,
+        }))
     }
 }
 
@@ -1857,29 +1857,15 @@ impl AndriodAutoBluettothServer {
                 .expect("Invalid pem sert vor aauto server");
             CertificateDer::from_pem(aautocertpem.0, aautocertpem.1).unwrap()
         };
-        let cert = {
-            let mut br = std::io::Cursor::new(cert::CERTIFICATE.to_string().as_bytes().to_vec());
-            let aautocertpem = rustls::pki_types::pem::from_buf(&mut br)
-                .expect("Failed to parse pem for aauto client")
-                .expect("Invalid pem cert for aauto client");
-            CertificateDer::from_pem(aautocertpem.0, aautocertpem.1).unwrap()
-        };
-        let key = {
-            let mut br = std::io::Cursor::new(cert::PRIVATE_KEY.to_string().as_bytes().to_vec());
-            let aautocertpem = rustls::pki_types::pem::from_buf(&mut br)
-                .expect("Failed to parse pem for aauto client")
-                .expect("Invalid pem cert for aauto client");
-            rustls::pki_types::PrivateKeyDer::from_pem(aautocertpem.0, aautocertpem.1).unwrap()
-        };
-        let cert = vec![cert];
         root_store
             .add(aautocertder)
             .expect("Failed to load android auto server cert");
         let root_store = Arc::new(root_store);
         let sver = Arc::new(AndroidAutoVerifier::new(root_store.clone()));
-        let mut ssl_client_config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store.clone())
-            .with_client_cert_resolver(sver.clone());
+        let mut ssl_client_config =
+            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+                .with_root_certificates(root_store.clone())
+                .with_client_cert_resolver(sver.clone());
         ssl_client_config.dangerous().set_certificate_verifier(sver);
         let sslconfig = Arc::new(ssl_client_config);
         let server = "idontknow.com".try_into().unwrap();
