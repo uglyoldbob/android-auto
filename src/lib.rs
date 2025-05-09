@@ -40,6 +40,9 @@ pub trait AndroidAutoMainTrait {
     /// Retrieve the receiver so that the user can send messages to the android auto compatible device or crate
     fn get_receiver(&mut self) -> Option<tokio::sync::mpsc::Receiver<SendableAndroidAutoMessage>>;
 
+    /// The android auto device just connected
+    async fn connect(&mut self);
+
     /// The android auto device disconnected
     async fn disconnect(&mut self);
 }
@@ -693,6 +696,8 @@ impl ChannelHandlerTrait for InputChannelHandler {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
+                AndroidAutoControlMessage::ShutdownRequest(_) => unimplemented!(),
+                AndroidAutoControlMessage::ShutdownResponse => unimplemented!(),
                 AndroidAutoControlMessage::PingResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::PingRequest(_) => unimplemented!(),
                 AndroidAutoControlMessage::AudioFocusRequest(_) => unimplemented!(),
@@ -920,6 +925,8 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
         let msg4: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg4 {
             match msg2 {
+                AndroidAutoControlMessage::ShutdownRequest(_) => unimplemented!(),
+                AndroidAutoControlMessage::ShutdownResponse => unimplemented!(),
                 AndroidAutoControlMessage::PingResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::PingRequest(_) => unimplemented!(),
                 AndroidAutoControlMessage::AudioFocusRequest(_) => unimplemented!(),
@@ -999,6 +1006,8 @@ impl ChannelHandlerTrait for NavigationChannelHandler {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
+                AndroidAutoControlMessage::ShutdownRequest(_) => unimplemented!(),
+                AndroidAutoControlMessage::ShutdownResponse => unimplemented!(),
                 AndroidAutoControlMessage::PingResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::PingRequest(_) => unimplemented!(),
                 AndroidAutoControlMessage::AudioFocusRequest(_) => unimplemented!(),
@@ -1390,6 +1399,8 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
+                AndroidAutoControlMessage::ShutdownRequest(_) => unimplemented!(),
+                AndroidAutoControlMessage::ShutdownResponse => unimplemented!(),
                 AndroidAutoControlMessage::PingResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::PingRequest(_) => unimplemented!(),
                 AndroidAutoControlMessage::AudioFocusRequest(_) => unimplemented!(),
@@ -1858,6 +1869,7 @@ impl AndriodAutoBluettothServer {
                         return;
                     }
                 }
+                log::error!("Closing message receiver for android auto messages");
             });
             Some(DroppingJoinHandle { handle: jh })
         } else {
@@ -1881,9 +1893,7 @@ impl AndriodAutoBluettothServer {
         channel_handlers.push(MediaStatusChannelHandler {}.into());
 
         let mut chans = Vec::new();
-        let chan_visit = [7, 4, 5, 6, 2, 3, 8, 9, 10, 1];
-        for index in chan_visit {
-            let handler = &channel_handlers[index];
+        for (index, handler) in channel_handlers.iter().enumerate() {
             let chan: ChannelId = index as u8;
             if let Some(chan) = handler.build_channel(&config, chan) {
                 chans.push(chan);
@@ -1934,7 +1944,9 @@ impl AndriodAutoBluettothServer {
                 if let Ok((stream, addr)) = a.accept().await {
                     let config2 = config.clone();
                     let _ = stream.set_nodelay(true);
+                    main.connect().await;
                     if let Err(e) = Self::handle_client(stream, addr, config2, &mut main).await {
+                        main.disconnect().await;
                         log::error!("Disconnect from client: {:?}", e);
                     }
                 }

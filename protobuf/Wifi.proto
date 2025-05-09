@@ -808,3 +808,21 @@ message InputEventIndication
     optional AbsoluteInputEvents absolute_input_event = 5;
     optional RelativeInputEvents relative_input_event = 6;
 }
+
+message ShutdownReason
+{
+    enum Enum
+    {
+        NONE = 0;
+        QUIT = 1;
+    }
+}
+
+message ShutdownRequest
+{
+    required ShutdownReason.Enum reason = 1;
+}
+
+message ShutdownResponse
+{
+}

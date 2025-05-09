@@ -141,6 +141,8 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
         let msg4: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg4 {
             match msg2 {
+                AndroidAutoControlMessage::ShutdownRequest(_) => unimplemented!(),
+                AndroidAutoControlMessage::ShutdownResponse => unimplemented!(),
                 AndroidAutoControlMessage::PingResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::PingRequest(_) => unimplemented!(),
                 AndroidAutoControlMessage::AudioFocusRequest(_) => unimplemented!(),

@@ -184,6 +184,8 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
+                AndroidAutoControlMessage::ShutdownRequest(_) => unimplemented!(),
+                AndroidAutoControlMessage::ShutdownResponse => unimplemented!(),
                 AndroidAutoControlMessage::PingResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::PingRequest(_) => unimplemented!(),
                 AndroidAutoControlMessage::AudioFocusRequest(_) => unimplemented!(),

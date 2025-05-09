@@ -38,6 +38,10 @@ pub enum AndroidAutoControlMessage {
     PingRequest(Wifi::PingRequest),
     /// A response to a ping response
     PingResponse(Wifi::PingResponse),
+    /// A shutdown request
+    ShutdownRequest(Wifi::ShutdownRequest),
+    /// A shutdown response
+    ShutdownResponse,
 }
 
 #[cfg(feature = "wireless")]
@@ -64,7 +68,13 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
                     }
                     Wifi::ControlMessage::NAVIGATION_FOCUS_REQUEST => unimplemented!(),
                     Wifi::ControlMessage::NAVIGATION_FOCUS_RESPONSE => unimplemented!(),
-                    Wifi::ControlMessage::SHUTDOWN_REQUEST => unimplemented!(),
+                    Wifi::ControlMessage::SHUTDOWN_REQUEST => {
+                        let m = Wifi::ShutdownRequest::parse_from_bytes(&value.data[2..]);
+                        match m {
+                            Ok(m) => Ok(AndroidAutoControlMessage::ShutdownRequest(m)),
+                            Err(e) => Err(format!("Invalid shutdown request: {}", e)),
+                        }
+                    }
                     Wifi::ControlMessage::SHUTDOWN_RESPONSE => unimplemented!(),
                     Wifi::ControlMessage::VOICE_SESSION_REQUEST => unimplemented!(),
                     Wifi::ControlMessage::AUDIO_FOCUS_RESPONSE => unimplemented!(),
@@ -123,6 +133,24 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
 impl From<AndroidAutoControlMessage> for AndroidAutoFrame {
     fn from(value: AndroidAutoControlMessage) -> Self {
         match value {
+            AndroidAutoControlMessage::ShutdownRequest(_) => unimplemented!(),
+            AndroidAutoControlMessage::ShutdownResponse => {
+                let m = Wifi::ShutdownResponse::new();
+                let mut data = m.write_to_bytes().unwrap();
+                let t = Wifi::ControlMessage::SHUTDOWN_RESPONSE as u16;
+                let t = t.to_be_bytes();
+                let mut m = Vec::new();
+                m.push(t[0]);
+                m.push(t[1]);
+                m.append(&mut data);
+                AndroidAutoFrame {
+                    header: FrameHeader {
+                        channel_id: 0,
+                        frame: FrameHeaderContents::new(true, FrameHeaderType::Single, false),
+                    },
+                    data: m,
+                }
+            }
             AndroidAutoControlMessage::PingResponse(m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::ControlMessage::PING_RESPONSE as u16;
@@ -300,6 +328,15 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
+                AndroidAutoControlMessage::ShutdownResponse => unimplemented!(),
+                AndroidAutoControlMessage::ShutdownRequest(m) => {
+                    if m.reason() == Wifi::shutdown_reason::Enum::QUIT {
+                        stream
+                            .write_frame(AndroidAutoControlMessage::ShutdownResponse.into())
+                            .await?;
+                        return Err(std::io::Error::other("Shutdown requested by peer"));
+                    }
+                }
                 AndroidAutoControlMessage::PingResponse(_) => {}
                 AndroidAutoControlMessage::PingRequest(a) => {
                     let mut m = Wifi::PingResponse::new();
