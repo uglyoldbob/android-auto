@@ -29,6 +29,7 @@ use sensor::*;
 pub use protobuf;
 
 /// The base trait for crate users to implement
+#[async_trait::async_trait]
 pub trait AndroidAutoMainTrait {
     /// This allows the incoming video stream to be processed
     #[inline(always)]
@@ -38,6 +39,9 @@ pub trait AndroidAutoMainTrait {
 
     /// Retrieve the receiver so that the user can send messages to the android auto compatible device or crate
     fn get_receiver(&mut self) -> Option<tokio::sync::mpsc::Receiver<SendableAndroidAutoMessage>>;
+
+    /// The android auto device disconnected
+    async fn disconnect(&mut self);
 }
 
 /// This trait is implemented by users wishing to display a video stream from an android auto (phone probably).
