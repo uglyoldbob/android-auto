@@ -28,6 +28,9 @@ use sensor::*;
 
 pub use protobuf;
 
+/// The list of channel handlers for the current android auto instance
+static CHANNEL_HANDLERS: std::sync::RwLock<Vec<ChannelHandler>> = std::sync::RwLock::new(Vec::new());
+
 /// The base trait for crate users to implement
 #[async_trait::async_trait]
 pub trait AndroidAutoMainTrait {
@@ -96,6 +99,13 @@ pub struct SendableAndroidAutoMessage {
     data: Vec<u8>,
 }
 
+/// A message sent from an app user to this crate
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum AndroidAutoChannelMessageFromApp {
+    /// A message that needs to be forwarded to the android auto device
+    MessageToPhone(SendableAndroidAutoMessage),
+}
+
 impl From<SendableAndroidAutoMessage> for AndroidAutoFrame {
     fn from(value: SendableAndroidAutoMessage) -> Self {
         Self {
@@ -109,9 +119,9 @@ impl From<SendableAndroidAutoMessage> for AndroidAutoFrame {
 }
 
 impl AndroidAutoMessage {
-    /// Convert the message to something that can be sent
-    /// TODO: Figure out how to relay the correct channel id to this function
-    pub fn sendable(self) -> SendableAndroidAutoMessage {
+    /// Convert the message to something that can be sent, if possible
+    pub fn sendable(self) -> Option<SendableAndroidAutoMessage> {
+        let chans = CHANNEL_HANDLERS.read().unwrap();
         match self {
             Self::Input(m) => {
                 let mut data = m.write_to_bytes().unwrap();
@@ -121,10 +131,19 @@ impl AndroidAutoMessage {
                 m.push(t[0]);
                 m.push(t[1]);
                 m.append(&mut data);
-                SendableAndroidAutoMessage {
-                    channel: 1,
-                    data: m,
+                let mut chan = None;
+                for (i, c) in chans.iter().enumerate() {
+                    if let ChannelHandler::Input(_) = c {
+                        chan = Some(i as u8);
+                        break;
+                    }
                 }
+                chan.map(|chan| {
+                    SendableAndroidAutoMessage {
+                        channel: chan,
+                        data: m,
+                    }
+                })
             }
             Self::Other => todo!(),
         }
@@ -532,7 +551,7 @@ trait ChannelHandlerTrait {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
@@ -547,7 +566,7 @@ trait ChannelHandlerTrait {
     ) -> Option<ChannelDescriptor>;
 
     /// Set the list of all channels for the current channel. Only used for the control channel. This is because the control channel must be created first.
-    fn set_channels(&mut self, _chans: Vec<ChannelDescriptor>) {}
+    fn set_channels(&self, _chans: Vec<ChannelDescriptor>) {}
 }
 
 /// A message about binding input buttons on a compatible android auto head unit
@@ -655,7 +674,7 @@ impl ChannelHandlerTrait for InputChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
@@ -751,7 +770,7 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
@@ -884,7 +903,7 @@ impl ChannelHandlerTrait for MediaStatusChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
@@ -980,7 +999,7 @@ impl ChannelHandlerTrait for NavigationChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
@@ -1061,7 +1080,7 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
@@ -1285,7 +1304,7 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
@@ -1373,7 +1392,7 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
@@ -1876,30 +1895,35 @@ impl AndriodAutoBluettothServer {
             None
         };
 
-        let mut channel_handlers: Vec<ChannelHandler> = Vec::new();
-        channel_handlers.push(ControlChannelHandler::new().into());
-        channel_handlers.push(InputChannelHandler {}.into());
-        channel_handlers.push(SensorChannelHandler {}.into());
-        if main.supports_video().is_some() {
-            log::info!("Setting up video channel");
-            channel_handlers.push(VideoChannelHandler::new().into());
-        }
-        channel_handlers.push(MediaAudioChannelHandler {}.into());
-        channel_handlers.push(SpeechAudioChannelHandler {}.into());
-        channel_handlers.push(SystemAudioChannelHandler {}.into());
-        channel_handlers.push(AvInputChannelHandler {}.into());
-        channel_handlers.push(BluetoothChannelHandler {}.into());
-        channel_handlers.push(NavigationChannelHandler {}.into());
-        channel_handlers.push(MediaStatusChannelHandler {}.into());
-
-        let mut chans = Vec::new();
-        for (index, handler) in channel_handlers.iter().enumerate() {
-            let chan: ChannelId = index as u8;
-            if let Some(chan) = handler.build_channel(&config, chan) {
-                chans.push(chan);
+        {
+            let mut channel_handlers: Vec<ChannelHandler> = Vec::new();
+            channel_handlers.push(ControlChannelHandler::new().into());
+            channel_handlers.push(InputChannelHandler {}.into());
+            channel_handlers.push(SensorChannelHandler {}.into());
+            if main.supports_video().is_some() {
+                log::info!("Setting up video channel");
+                channel_handlers.push(VideoChannelHandler::new().into());
             }
+            channel_handlers.push(MediaAudioChannelHandler {}.into());
+            channel_handlers.push(SpeechAudioChannelHandler {}.into());
+            channel_handlers.push(SystemAudioChannelHandler {}.into());
+            channel_handlers.push(AvInputChannelHandler {}.into());
+            channel_handlers.push(BluetoothChannelHandler {}.into());
+            channel_handlers.push(NavigationChannelHandler {}.into());
+            channel_handlers.push(MediaStatusChannelHandler {}.into());
+
+            let mut chans = Vec::new();
+            for (index, handler) in channel_handlers.iter().enumerate() {
+                let chan: ChannelId = index as u8;
+                if let Some(chan) = handler.build_channel(&config, chan) {
+                    chans.push(chan);
+                }
+            }
+            channel_handlers.get_mut(0).unwrap().set_channels(chans);
+            let mut ch = CHANNEL_HANDLERS.write().map_err(|_|"Failed to set the channel handlers")?;
+            ch.clear();
+            ch.append(&mut channel_handlers);
         }
-        channel_handlers.get_mut(0).unwrap().set_channels(chans);
         log::debug!(
             "Got a connection on port {} from {:?}",
             config.network.port,
@@ -1909,9 +1933,10 @@ impl AndriodAutoBluettothServer {
             .await
             .map_err(|e| e.to_string())?;
         let mut fr2 = AndroidAutoFrameReceiver::new();
+        let channel_handlers = CHANNEL_HANDLERS.read().map_err(|_|"Failed to read the channel handlers")?;
         loop {
             if let Ok(f) = sm.read_frame(&mut fr2).await {
-                if let Some(handler) = channel_handlers.get_mut(f.header.channel_id as usize) {
+                if let Some(handler) = channel_handlers.get(f.header.channel_id as usize) {
                     handler
                         .receive_data(f, &sm, &config, main)
                         .await
@@ -1947,6 +1972,8 @@ impl AndriodAutoBluettothServer {
                     main.connect().await;
                     if let Err(e) = Self::handle_client(stream, addr, config2, &mut main).await {
                         main.disconnect().await;
+                        let mut ch = CHANNEL_HANDLERS.write().map_err(|_|"Failed to clear the channel handlers")?;
+                        ch.clear();
                         log::error!("Disconnect from client: {:?}", e);
                     }
                 }

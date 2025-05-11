@@ -7,16 +7,29 @@ use super::{
 use crate::{StreamMux, Wifi};
 use protobuf::Message;
 
-/// The handler for the video channel on android auto
-pub struct VideoChannelHandler {
+/// The inner protected data for a video stream
+struct InnerChannelHandler {
     /// The active session for a video stream
     session: Option<i32>,
+}
+
+impl InnerChannelHandler {
+    /// construct a new self
+    pub fn new() -> Self {
+        Self { session: None }
+    }
+}
+
+/// The handler for the video channel on android auto
+pub struct VideoChannelHandler {
+    /// The protected contents of a video stream
+    inner: std::sync::Mutex<InnerChannelHandler>,
 }
 
 impl VideoChannelHandler {
     /// construct a new self
     pub fn new() -> Self {
-        Self { session: None }
+        Self { inner: std::sync::Mutex::new(InnerChannelHandler::new()) }
     }
 }
 
@@ -61,7 +74,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
@@ -101,8 +114,9 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     if let Some(a) = main.supports_video() {
                         a.receive_video(data, time).await;
                         let mut m2 = Wifi::AVMediaAckIndication::new();
+                        let inner = self.inner.lock().unwrap();
                         m2.set_session(
-                            self.session
+                            inner.session
                                 .ok_or(std::io::Error::other("Missing video session"))?,
                         );
                         m2.set_value(1);
@@ -148,7 +162,8 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
                 AvChannelMessage::StartIndication(_chan, m) => {
-                    self.session = Some(m.session());
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.session = Some(m.session());
                 }
             }
             return Ok(());

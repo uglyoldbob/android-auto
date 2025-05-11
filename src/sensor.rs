@@ -123,7 +123,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,

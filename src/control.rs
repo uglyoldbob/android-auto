@@ -286,13 +286,12 @@ impl From<AndroidAutoControlMessage> for AndroidAutoFrame {
     }
 }
 
-/// Handles the control channel of the android auto protocol
-pub struct ControlChannelHandler {
+struct InnerChannelHandler {
     /// The list of all channels for the head unit. This is filled out after the control channel is created
     channels: Vec<Wifi::ChannelDescriptor>,
 }
 
-impl ControlChannelHandler {
+impl InnerChannelHandler {
     /// Construct a new self
     pub fn new() -> Self {
         Self {
@@ -301,9 +300,25 @@ impl ControlChannelHandler {
     }
 }
 
+/// Handles the control channel of the android auto protocol
+pub struct ControlChannelHandler {
+    /// The inner protected data
+    inner: std::sync::Mutex<InnerChannelHandler>,
+}
+
+impl ControlChannelHandler {
+    /// Construct a new self
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(InnerChannelHandler::new()),
+        }
+    }
+}
+
 impl ChannelHandlerTrait for ControlChannelHandler {
-    fn set_channels(&mut self, chans: Vec<Wifi::ChannelDescriptor>) {
-        self.channels = chans;
+    fn set_channels(&self, chans: Vec<Wifi::ChannelDescriptor>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.channels = chans;
     }
 
     fn build_channel(
@@ -319,7 +334,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
-        &mut self,
+        &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         config: &AndroidAutoConfiguration,
@@ -390,8 +405,8 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                     m2.set_left_hand_drive_vehicle(config.unit.left_hand);
                     m2.set_sw_build(config.unit.sw_build.clone());
                     m2.set_sw_version(config.unit.sw_version.clone());
-
-                    for s in &self.channels {
+                    let inner = self.inner.lock().unwrap();
+                    for s in &inner.channels {
                         m2.channels.push(s.clone());
                     }
                     stream
