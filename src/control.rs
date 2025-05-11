@@ -405,9 +405,11 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                     m2.set_left_hand_drive_vehicle(config.unit.left_hand);
                     m2.set_sw_build(config.unit.sw_build.clone());
                     m2.set_sw_version(config.unit.sw_version.clone());
-                    let inner = self.inner.lock().unwrap();
-                    for s in &inner.channels {
-                        m2.channels.push(s.clone());
+                    {
+                        let inner = self.inner.lock().unwrap();
+                        for s in &inner.channels {
+                            m2.channels.push(s.clone());
+                        }
                     }
                     stream
                         .write_frame(AndroidAutoControlMessage::ServiceDiscoveryResponse(m2).into())

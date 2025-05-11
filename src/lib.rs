@@ -121,7 +121,6 @@ impl From<SendableAndroidAutoMessage> for AndroidAutoFrame {
 impl AndroidAutoMessage {
     /// Convert the message to something that can be sent, if possible
     pub fn sendable(self) -> Option<SendableAndroidAutoMessage> {
-        let chans = CHANNEL_HANDLERS.read().unwrap();
         match self {
             Self::Input(m) => {
                 let mut data = m.write_to_bytes().unwrap();
@@ -132,6 +131,7 @@ impl AndroidAutoMessage {
                 m.push(t[1]);
                 m.append(&mut data);
                 let mut chan = None;
+                let chans = CHANNEL_HANDLERS.read().unwrap();
                 for (i, c) in chans.iter().enumerate() {
                     if let ChannelHandler::Input(_) = c {
                         chan = Some(i as u8);

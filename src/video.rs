@@ -114,11 +114,13 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     if let Some(a) = main.supports_video() {
                         a.receive_video(data, time).await;
                         let mut m2 = Wifi::AVMediaAckIndication::new();
-                        let inner = self.inner.lock().unwrap();
-                        m2.set_session(
-                            inner.session
-                                .ok_or(std::io::Error::other("Missing video session"))?,
-                        );
+                        {
+                            let inner = self.inner.lock().unwrap();
+                            m2.set_session(
+                                inner.session
+                                    .ok_or(std::io::Error::other("Missing video session"))?,
+                            );
+                        }
                         m2.set_value(1);
                         stream
                             .write_frame(AvChannelMessage::MediaIndicationAck(channel, m2).into())
