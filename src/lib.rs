@@ -29,7 +29,7 @@ use sensor::*;
 pub use protobuf;
 
 /// The list of channel handlers for the current android auto instance
-static CHANNEL_HANDLERS: std::sync::RwLock<Vec<ChannelHandler>> = std::sync::RwLock::new(Vec::new());
+static CHANNEL_HANDLERS: tokio::sync::RwLock<Vec<ChannelHandler>> = tokio::sync::RwLock::const_new(Vec::new());
 
 /// The base trait for crate users to implement
 #[async_trait::async_trait]
@@ -131,7 +131,37 @@ impl AndroidAutoMessage {
                 m.push(t[1]);
                 m.append(&mut data);
                 let mut chan = None;
-                let chans = CHANNEL_HANDLERS.read().unwrap();
+                let chans = CHANNEL_HANDLERS.blocking_read();
+                for (i, c) in chans.iter().enumerate() {
+                    if let ChannelHandler::Input(_) = c {
+                        chan = Some(i as u8);
+                        break;
+                    }
+                }
+                chan.map(|chan| {
+                    SendableAndroidAutoMessage {
+                        channel: chan,
+                        data: m,
+                    }
+                })
+            }
+            Self::Other => todo!(),
+        }
+    }
+
+    /// Convert the message to something that can be sent, if possible
+    pub async fn sendable_async(self) -> Option<SendableAndroidAutoMessage> {
+        match self {
+            Self::Input(m) => {
+                let mut data = m.write_to_bytes().unwrap();
+                let t = Wifi::input_channel_message::Enum::INPUT_EVENT_INDICATION as u16;
+                let t = t.to_be_bytes();
+                let mut m = Vec::new();
+                m.push(t[0]);
+                m.push(t[1]);
+                m.append(&mut data);
+                let mut chan = None;
+                let chans = CHANNEL_HANDLERS.read().await;
                 for (i, c) in chans.iter().enumerate() {
                     if let ChannelHandler::Input(_) = c {
                         chan = Some(i as u8);
@@ -1920,9 +1950,11 @@ impl AndriodAutoBluettothServer {
                 }
             }
             channel_handlers.get_mut(0).unwrap().set_channels(chans);
-            let mut ch = CHANNEL_HANDLERS.write().map_err(|_|"Failed to set the channel handlers")?;
-            ch.clear();
-            ch.append(&mut channel_handlers);
+            {
+                let mut ch = CHANNEL_HANDLERS.write().await;
+                ch.clear();
+                ch.append(&mut channel_handlers);
+            }
         }
         log::debug!(
             "Got a connection on port {} from {:?}",
@@ -1933,7 +1965,7 @@ impl AndriodAutoBluettothServer {
             .await
             .map_err(|e| e.to_string())?;
         let mut fr2 = AndroidAutoFrameReceiver::new();
-        let channel_handlers = CHANNEL_HANDLERS.read().map_err(|_|"Failed to read the channel handlers")?;
+        let channel_handlers = CHANNEL_HANDLERS.read().await;
         loop {
             if let Ok(f) = sm.read_frame(&mut fr2).await {
                 if let Some(handler) = channel_handlers.get(f.header.channel_id as usize) {
@@ -1972,7 +2004,7 @@ impl AndriodAutoBluettothServer {
                     main.connect().await;
                     if let Err(e) = Self::handle_client(stream, addr, config2, &mut main).await {
                         main.disconnect().await;
-                        let mut ch = CHANNEL_HANDLERS.write().map_err(|_|"Failed to clear the channel handlers")?;
+                        let mut ch = CHANNEL_HANDLERS.write().await;
                         ch.clear();
                         log::error!("Disconnect from client: {:?}", e);
                     }
