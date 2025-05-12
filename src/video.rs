@@ -70,7 +70,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
     }
 
     async fn receive_data<
-        T: AndroidAutoMainTrait,
+        T: super::AndroidAutoMainTrait + ?Sized,
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
@@ -78,7 +78,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
-        main: &mut T,
+        main: &T,
     ) -> Result<(), std::io::Error> {
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();

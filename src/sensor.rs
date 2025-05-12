@@ -119,7 +119,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
     }
 
     async fn receive_data<
-        T: AndroidAutoMainTrait,
+        T: super::AndroidAutoMainTrait + ?Sized,
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
@@ -127,7 +127,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
-        _main: &mut T,
+        _main: &T,
     ) -> Result<(), std::io::Error> {
         let channel = msg.header.channel_id;
         let msg2: Result<SensorMessage, String> = (&msg).try_into();

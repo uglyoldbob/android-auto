@@ -330,7 +330,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
     }
 
     async fn receive_data<
-        T: AndroidAutoMainTrait,
+        T: AndroidAutoMainTrait + ?Sized,
         U: tokio::io::AsyncRead + Unpin,
         V: tokio::io::AsyncWrite + Unpin,
     >(
@@ -338,7 +338,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         config: &AndroidAutoConfiguration,
-        _main: &mut T,
+        _main: &T,
     ) -> Result<(), std::io::Error> {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
