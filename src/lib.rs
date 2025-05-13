@@ -10,7 +10,7 @@ use std::{
 
 mod cert;
 
-use bluetooth_rust::{BluetoothRfcommConnectableTrait, BluetoothRfcommProfileTrait};
+use bluetooth_rust::{BluetoothRfcommConnectableTrait, BluetoothRfcommProfileTrait, BluetoothStream};
 use ::protobuf::Message;
 use Wifi::ChannelDescriptor;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
@@ -54,10 +54,7 @@ pub trait AndroidAutoMainTrait {
     async fn disconnect(&self);
 
     /// Retrieve the receiver so that the user can send messages to the android auto compatible device or crate
-    fn get_receiver(&self) -> Option<tokio::sync::mpsc::Receiver<SendableAndroidAutoMessage>>;
-
-    /// Retrieve the receiver so that the user can send messages to the android auto compatible device or crate
-    async fn get_receiver_async(&self) -> Option<tokio::sync::mpsc::Receiver<SendableAndroidAutoMessage>>;
+    async fn get_receiver(&self) -> Option<tokio::sync::mpsc::Receiver<SendableAndroidAutoMessage>>;
 }
 
 /// this trait is implemented by users that support bluetooth and wifi (both are required for wireless android auto)
@@ -93,7 +90,7 @@ pub trait AndroidAutoBluetoothTrait : AndroidAutoMainTrait {
 }
 
 /// This is the bluetooth server for initiating wireless android auto on compatible devices.
-pub struct AndriodAutoServer {
+pub struct AndroidAutoServer {
 }
 
 #[allow(missing_docs)]
@@ -114,13 +111,49 @@ pub enum AndroidAutoMessage {
     Other,
 }
 
+/// The type of channel being sent in a sendable message
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum SendableChannelType {
+    /// The input channel
+    Input,
+    /// Other channel type
+    Other,
+}
+
 /// The sendable form of an `AndroidAutoMessage`
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SendableAndroidAutoMessage {
     /// The channel id to send the message to
-    channel: u8,
+    channel: SendableChannelType,
     /// The message body to send
     data: Vec<u8>,
+}
+
+impl SendableAndroidAutoMessage {
+    async fn into_frame(self) -> AndroidAutoFrame {
+        let mut chan = None;
+        let chans = CHANNEL_HANDLERS.read().await;
+        for (i, c) in chans.iter().enumerate() {
+            match self.channel {
+                SendableChannelType::Input => {
+                    if let ChannelHandler::Input(_) = c {
+                        chan = Some(i as u8);
+                        break;
+                    }
+                }
+                SendableChannelType::Other => {
+                    todo!();
+                }
+            }
+        }
+        AndroidAutoFrame {
+            header: FrameHeader {
+                channel_id: chan.unwrap(),
+                frame: FrameHeaderContents::new(true, FrameHeaderType::Single, false),
+            },
+            data: self.data,
+        }
+    }
 }
 
 /// A message sent from an app user to this crate
@@ -130,21 +163,9 @@ pub enum AndroidAutoChannelMessageFromApp {
     MessageToPhone(SendableAndroidAutoMessage),
 }
 
-impl From<SendableAndroidAutoMessage> for AndroidAutoFrame {
-    fn from(value: SendableAndroidAutoMessage) -> Self {
-        Self {
-            header: FrameHeader {
-                channel_id: value.channel,
-                frame: FrameHeaderContents::new(true, FrameHeaderType::Single, false),
-            },
-            data: value.data,
-        }
-    }
-}
-
 impl AndroidAutoMessage {
     /// Convert the message to something that can be sent, if possible
-    pub fn sendable(self) -> Option<SendableAndroidAutoMessage> {
+    pub fn sendable(self) -> SendableAndroidAutoMessage {
         match self {
             Self::Input(m) => {
                 let mut data = m.write_to_bytes().unwrap();
@@ -154,50 +175,10 @@ impl AndroidAutoMessage {
                 m.push(t[0]);
                 m.push(t[1]);
                 m.append(&mut data);
-                let mut chan = None;
-                let chans = CHANNEL_HANDLERS.blocking_read();
-                for (i, c) in chans.iter().enumerate() {
-                    if let ChannelHandler::Input(_) = c {
-                        chan = Some(i as u8);
-                        break;
-                    }
+                SendableAndroidAutoMessage {
+                    channel: SendableChannelType::Input,
+                    data: m,
                 }
-                chan.map(|chan| {
-                    SendableAndroidAutoMessage {
-                        channel: chan,
-                        data: m,
-                    }
-                })
-            }
-            Self::Other => todo!(),
-        }
-    }
-
-    /// Convert the message to something that can be sent, if possible
-    pub async fn sendable_async(self) -> Option<SendableAndroidAutoMessage> {
-        match self {
-            Self::Input(m) => {
-                let mut data = m.write_to_bytes().unwrap();
-                let t = Wifi::input_channel_message::Enum::INPUT_EVENT_INDICATION as u16;
-                let t = t.to_be_bytes();
-                let mut m = Vec::new();
-                m.push(t[0]);
-                m.push(t[1]);
-                m.append(&mut data);
-                let mut chan = None;
-                let chans = CHANNEL_HANDLERS.read().await;
-                for (i, c) in chans.iter().enumerate() {
-                    if let ChannelHandler::Input(_) = c {
-                        chan = Some(i as u8);
-                        break;
-                    }
-                }
-                chan.map(|chan| {
-                    SendableAndroidAutoMessage {
-                        channel: chan,
-                        data: m,
-                    }
-                })
             }
             Self::Other => todo!(),
         }
@@ -269,8 +250,6 @@ pub struct BluetoothInformation {
 /// Provides basic configuration elements for setting up an android auto head unit
 #[derive(Clone)]
 pub struct AndroidAutoConfiguration {
-    /// The wireless network information
-    pub network: NetworkInformation,
     /// The bluetooth information
     pub bluetooth: BluetoothInformation,
     /// The head unit information
@@ -1695,8 +1674,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
     ) -> Result<(), std::io::Error> {
         let mut s = self.writer.lock().await;
         let mut ssl_stream = self.ssl_client.lock().await;
-        let f: AndroidAutoFrame = f.into();
-        let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
+        let d2: Vec<u8> = f.into_frame().await.build_vec(Some(&mut *ssl_stream)).await;
         s.write_all(&d2).await
     }
 }
@@ -1782,76 +1760,83 @@ impl<T> Drop for DroppingJoinHandle<T> {
     }
 }
 
-async fn bluetooth_service(mut profile: bluetooth_rust::BluetoothRfcommProfile, wireless: Arc<dyn AndroidAutoWirelessTrait>) -> Result<(), String> {
-    while let Ok(c) = profile.connectable().await {
-        let network2 = wireless.get_wifi_details();
-        let mut stream = c.accept().await?;
-        let mut s = Bluetooth::SocketInfoRequest::new();
-        s.set_ip_address(network2.ip.clone());
-        s.set_port(network2.port as u32);
+async fn handle_bluetooth_client(stream: &mut BluetoothStream, network2: &NetworkInformation) -> Result<(), String> {
+    let mut s = Bluetooth::SocketInfoRequest::new();
+    s.set_ip_address(network2.ip.clone());
+    s.set_port(network2.port as u32);
 
-        let m1 = AndroidAutoBluetoothMessage::SocketInfoRequest(s);
-        let m: AndroidAutoRawBluetoothMessage = m1.as_message();
-        let mdata: Vec<u8> = m.into();
-        let _ = stream.write_all(&mdata).await;
-        loop {
-            let mut ty = [0u8; 2];
-            let mut len = [0u8; 2];
-            stream.read_exact(&mut len).await.map_err(|e| e.to_string())?;
-            stream.read_exact(&mut ty).await.map_err(|e| e.to_string())?;
-            let len = u16::from_be_bytes(len);
-            let ty = u16::from_be_bytes(ty);
-            let mut message = vec![0; len as usize];
-            stream.read_exact(&mut message)
-                .await
-                .map_err(|e| e.to_string())?;
-            use protobuf::Enum;
-            match Bluetooth::MessageId::from_i32(ty as i32) {
-                Some(m) => match m {
-                    Bluetooth::MessageId::BLUETOOTH_SOCKET_INFO_REQUEST => {
-                        log::error!("Got a socket info request {:x?}", message);
-                        break;
-                    }
-                    Bluetooth::MessageId::BLUETOOTH_NETWORK_INFO_REQUEST => {
-                        let mut response = Bluetooth::NetworkInfo::new();
-                        response.set_ssid(network2.ssid.clone());
-                        response.set_psk(network2.psk.clone());
-                        response.set_mac_addr(network2.mac_addr.clone());
-                        response.set_security_mode(network2.security_mode);
-                        response.set_ap_type(network2.ap_type);
-                        let response =
-                            AndroidAutoBluetoothMessage::NetworkInfoMessage(response);
-                        let m: AndroidAutoRawBluetoothMessage = response.as_message();
-                        let mdata: Vec<u8> = m.into();
-                        let _ = stream.write_all(&mdata).await;
-                    }
-                    Bluetooth::MessageId::BLUETOOTH_SOCKET_INFO_RESPONSE => {
-                        let message =
-                            Bluetooth::SocketInfoResponse::parse_from_bytes(&message);
-                        log::info!("Message is now {:?}", message);
-                    }
-                    _ => {}
-                },
-                _ => {
-                    log::error!("Unknown bluetooth packet {} {:x?}", ty, message);
+    let m1 = AndroidAutoBluetoothMessage::SocketInfoRequest(s);
+    let m: AndroidAutoRawBluetoothMessage = m1.as_message();
+    let mdata: Vec<u8> = m.into();
+    let _ = stream.write_all(&mdata).await;
+    loop {
+        let mut ty = [0u8; 2];
+        let mut len = [0u8; 2];
+        stream.read_exact(&mut len).await.map_err(|e| e.to_string())?;
+        stream.read_exact(&mut ty).await.map_err(|e| e.to_string())?;
+        let len = u16::from_be_bytes(len);
+        let ty = u16::from_be_bytes(ty);
+        let mut message = vec![0; len as usize];
+        stream.read_exact(&mut message)
+            .await
+            .map_err(|e| e.to_string())?;
+        use protobuf::Enum;
+        match Bluetooth::MessageId::from_i32(ty as i32) {
+            Some(m) => match m {
+                Bluetooth::MessageId::BLUETOOTH_SOCKET_INFO_REQUEST => {
+                    log::error!("Got a socket info request {:x?}", message);
+                    break;
                 }
+                Bluetooth::MessageId::BLUETOOTH_NETWORK_INFO_REQUEST => {
+                    let mut response = Bluetooth::NetworkInfo::new();
+                    response.set_ssid(network2.ssid.clone());
+                    response.set_psk(network2.psk.clone());
+                    response.set_mac_addr(network2.mac_addr.clone());
+                    response.set_security_mode(network2.security_mode);
+                    response.set_ap_type(network2.ap_type);
+                    let response =
+                        AndroidAutoBluetoothMessage::NetworkInfoMessage(response);
+                    let m: AndroidAutoRawBluetoothMessage = response.as_message();
+                    let mdata: Vec<u8> = m.into();
+                    let _ = stream.write_all(&mdata).await;
+                }
+                Bluetooth::MessageId::BLUETOOTH_SOCKET_INFO_RESPONSE => {
+                    let message =
+                        Bluetooth::SocketInfoResponse::parse_from_bytes(&message);
+                    log::info!("Message is now {:?}", message);
+                }
+                _ => {}
+            },
+            _ => {
+                log::error!("Unknown bluetooth packet {} {:x?}", ty, message);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Ok(())
+}
+
+async fn bluetooth_service(mut profile: bluetooth_rust::BluetoothRfcommProfile, wireless: Arc<dyn AndroidAutoWirelessTrait>) -> Result<(), String> {
+    loop {
+        if let Ok(c) = profile.connectable().await {
+            let network2 = wireless.get_wifi_details();
+            let mut stream = c.accept().await?;
+            let e = handle_bluetooth_client(&mut stream, &network2).await;
+            log::info!("Bluetooth client disconnected: {:?}", e);
         }
     }
     Ok(())
 }
 
 async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(config: AndroidAutoConfiguration, wireless: Arc<T>) -> Result<(), String> {
-    let cp = rustls::crypto::ring::default_provider();
-    cp.install_default().expect("Failed to set ssl provider");
+    let network = wireless.get_wifi_details();
 
     log::debug!(
         "Listening on port {} for android auto stuff",
-        config.network.port
+        network.port
     );
     if let Ok(a) =
-        tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.network.port)).await
+        tokio::net::TcpListener::bind(format!("0.0.0.0:{}", network.port)).await
     {
         loop {
             if let Ok((stream, addr)) = a.accept().await {
@@ -1860,8 +1845,10 @@ async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(config: Andro
                 wireless.connect().await;
                 if let Err(e) = handle_client(stream, addr, config2, wireless.as_ref()).await {
                     wireless.disconnect().await;
-                    let mut ch = CHANNEL_HANDLERS.write().await;
-                    ch.clear();
+                    if false {
+                        let mut ch = CHANNEL_HANDLERS.write().await;
+                        ch.clear();
+                    }
                     log::error!("Disconnect from client: {:?}", e);
                 }
             }
@@ -1870,7 +1857,7 @@ async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(config: Andro
     } else {
         Err(format!(
             "Failed to listen on port {} tcp",
-            config.network.port
+            network.port
         ))
     }
 }
@@ -1923,7 +1910,7 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
 
     let stream = stream.into_split();
     let sm = StreamMux::new(stream.0, stream.1, ssl_client);
-    let message_recv = main.get_receiver();
+    let message_recv = main.get_receiver().await;
     let sm2 = sm.clone();
     let _task2 = if let Some(mut msgr) = message_recv {
         let jh = tokio::task::spawn(async move {
@@ -1969,12 +1956,12 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
         {
             let mut ch = CHANNEL_HANDLERS.write().await;
             ch.clear();
+            log::error!("Adding {} channels to CHANNEL_HANDLERS", channel_handlers.len());
             ch.append(&mut channel_handlers);
         }
     }
     log::debug!(
-        "Got a connection on port {} from {:?}",
-        config.network.port,
+        "Got a connection from {:?}",
         addr
     );
     sm.write_frame(AndroidAutoControlMessage::VersionRequest.into())
@@ -1996,9 +1983,9 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
     }
 }
 
-impl AndriodAutoServer {
+impl AndroidAutoServer {
     /// Runs the android auto server
-    pub async fn run<T: AndroidAutoMainTrait + Send + 'static>(self, config: AndroidAutoConfiguration, main: T) -> Result<(), String> {
+    pub async fn run<T: AndroidAutoMainTrait + Send + 'static>(self, config: AndroidAutoConfiguration, js: &mut tokio::task::JoinSet<Result<(), String>>, main: T) -> Result<(), String> {
         if let Some(wireless) = main.supports_wireless() {
             let psettings = bluetooth_rust::BluetoothRfcommProfileSettings {
                 uuid: bluetooth_rust::BluetoothUuid::AndroidAuto.as_str().to_string(),
@@ -2015,10 +2002,17 @@ impl AndriodAutoServer {
             };
 
             let profile = wireless.setup_bluetooth_profile(&psettings).await?;
-            let mut js = tokio::task::JoinSet::new();
-            js.spawn(bluetooth_service(profile, wireless.clone()));
-            js.spawn(wifi_service(config, wireless));
-            js.join_all().await;
+            let wireless2 = wireless.clone();
+            js.spawn(async move { 
+                let e = bluetooth_service(profile, wireless2).await;
+                log::error!("Android auto bluetooth service stopped: {:?}", e);
+                e
+            });
+            js.spawn(async move {
+                let e = wifi_service(config, wireless.clone()).await;
+                log::error!("Android auto wireless service stopped: {:?}", e);
+                e
+            });
             Ok(())
         }
         else {
@@ -2031,4 +2025,10 @@ impl AndriodAutoServer {
         Self {
         }
     }
+}
+
+/// Perform any setup required on startup of the library
+pub fn setup() {
+    let cp = rustls::crypto::ring::default_provider();
+    cp.install_default().expect("Failed to set ssl provider");
 }
