@@ -1,10 +1,10 @@
 //! Contains code for the the video channel
 
 use super::{
-    AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame,
-    AvChannelMessage, ChannelHandlerTrait, ChannelId,
+    AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, AvChannelMessage,
+    ChannelHandlerTrait, ChannelId,
 };
-use crate::{StreamMux, Wifi};
+use crate::{AndroidAutoMainTrait, StreamMux, Wifi};
 use protobuf::Message;
 
 /// The inner protected data for a video stream
@@ -36,39 +36,45 @@ impl VideoChannelHandler {
 }
 
 impl ChannelHandlerTrait for VideoChannelHandler {
-    fn build_channel(
+    fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
+        main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
-        let mut chan = Wifi::ChannelDescriptor::new();
-        let mut avchan = Wifi::AVChannel::new();
-        chan.set_channel_id(chanid as u32);
-        avchan.set_stream_type(Wifi::avstream_type::Enum::VIDEO);
-        avchan.set_available_while_in_call(true);
-        avchan.set_audio_type(Wifi::audio_type::Enum::SYSTEM);
-        let mut vconfs = Vec::new();
-        vconfs.push({
-            let mut vc = Wifi::VideoConfig::new();
-            vc.set_video_resolution(config.video.resolution);
-            vc.set_video_fps(config.video.fps);
-            vc.set_dpi(config.video.dpi as u32);
-            vc.set_margin_height(0);
-            vc.set_margin_width(0);
-            if !vc.is_initialized() {
-                panic!();
+        if let Some(v) = main.supports_video() {
+            let mut chan = Wifi::ChannelDescriptor::new();
+            let mut avchan = Wifi::AVChannel::new();
+            chan.set_channel_id(chanid as u32);
+            avchan.set_stream_type(Wifi::avstream_type::Enum::VIDEO);
+            avchan.set_available_while_in_call(true);
+            avchan.set_audio_type(Wifi::audio_type::Enum::SYSTEM);
+            let mut vconfs = Vec::new();
+            vconfs.push({
+                let mut vc = Wifi::VideoConfig::new();
+                let vcs = v.retrieve_video_configuration();
+                vc.set_video_resolution(vcs.resolution);
+                vc.set_video_fps(vcs.fps);
+                vc.set_dpi(vcs.dpi as u32);
+                vc.set_margin_height(0);
+                vc.set_margin_width(0);
+                if !vc.is_initialized() {
+                    panic!();
+                }
+                vc
+            });
+            for v in vconfs {
+                avchan.video_configs.push(v);
             }
-            vc
-        });
-        for v in vconfs {
-            avchan.video_configs.push(v);
-        }
 
-        chan.av_channel.0.replace(Box::new(avchan));
-        if !chan.is_initialized() {
-            panic!("Channel not initialized?");
+            chan.av_channel.0.replace(Box::new(avchan));
+            if !chan.is_initialized() {
+                panic!("Channel not initialized?");
+            }
+            Some(chan)
+        } else {
+            None
         }
-        Some(chan)
     }
 
     async fn receive_data<

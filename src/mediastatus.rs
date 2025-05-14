@@ -2,7 +2,10 @@
 
 use protobuf::Message;
 
-use crate::{common::AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, ChannelHandlerTrait, ChannelId, StreamMux, Wifi};
+use crate::{
+    AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, ChannelHandlerTrait,
+    ChannelId, StreamMux, Wifi, common::AndroidAutoCommonMessage,
+};
 
 /// A message about the media status of currently playing media
 #[derive(Debug)]
@@ -60,10 +63,11 @@ impl TryFrom<&AndroidAutoFrame> for MediaStatusMessage {
 pub struct MediaStatusChannelHandler {}
 
 impl ChannelHandlerTrait for MediaStatusChannelHandler {
-    fn build_channel(
+    fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
         _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
+        _main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = Wifi::ChannelDescriptor::new();
         chan.set_channel_id(chanid as u32);

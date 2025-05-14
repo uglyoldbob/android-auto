@@ -179,6 +179,11 @@ pub trait AndroidAutoMainTrait: Send + Sync {
         None
     }
 
+    /// Implement this to support navigation
+    fn supports_navigation(&self) -> Option<&dyn AndroidAutoNavigationTrait> {
+        None
+    }
+
     /// The android auto device just connected
     async fn connect(&self);
 
@@ -203,6 +208,17 @@ pub trait AndroidAutoWirelessTrait: AndroidAutoMainTrait {
     fn get_wifi_details(&self) -> NetworkInformation;
 }
 
+/// This trait is implemented by users that support navigation indicators
+#[async_trait::async_trait]
+pub trait AndroidAutoNavigationTrait: AndroidAutoMainTrait {
+    /// A turn indication update
+    async fn turn_indication(&self, m: Wifi::NavigationTurnEvent);
+    /// A distance indication update
+    async fn distance_indication(&self, m: Wifi::NavigationDistanceEvent);
+    /// A status update
+    async fn nagivation_status(&self, m: Wifi::NavigationStatus);
+}
+
 /// This trait is implemented by users wishing to display a video stream from an android auto (phone probably).
 #[async_trait::async_trait]
 pub trait AndroidAutoVideoChannelTrait: AndroidAutoMainTrait {
@@ -216,6 +232,8 @@ pub trait AndroidAutoVideoChannelTrait: AndroidAutoMainTrait {
     async fn wait_for_focus(&self);
     /// Set the focus of the video stream to be as requested
     async fn set_focus(&self, focus: bool);
+    /// Retrieve the video configuration for the channel
+    fn retrieve_video_configuration(&self) -> &VideoConfiguration;
 }
 
 /// The types of audio channels that can exist
@@ -244,11 +262,22 @@ pub trait AndroidAutoAudioOutputTrait: AndroidAutoMainTrait {
     async fn stop_audio(&self, t: AudioChannelType);
 }
 
+/// The configuration for an input channel
+#[derive(Clone)]
+pub struct InputConfiguration {
+    /// The supported keycodes
+    pub keycodes: Vec<u32>,
+    /// The touchscreen width and height
+    pub touchscreen: Option<(u16, u16)>,
+}
+
 /// This trait is implemented by users that have inputs for their head unit
 #[async_trait::async_trait]
 pub trait AndroidAutoInputChannelTrait: AndroidAutoMainTrait {
     /// A binding request for the specified keycode, generally the same code reported in `AndroidAutoConfig::keycodes_supported`
     async fn binding_request(&self, code: u32) -> Result<(), ()>;
+    /// Retrieve the input configuration
+    fn retrieve_input_configuration(&self) -> &InputConfiguration;
 }
 
 /// A trait that is implemented for users that somehow support bluetooth for their hardware
@@ -434,12 +463,6 @@ pub struct AndroidAutoConfiguration {
     pub bluetooth: BluetoothInformation,
     /// The head unit information
     pub unit: HeadUnitInfo,
-    /// The width and height for the touchscreen in pixels, if one is present
-    pub touchscreen: Option<(u16, u16)>,
-    /// The input keycodes supported.
-    pub keycodes_supported: Vec<u32>,
-    /// The video config
-    pub video: VideoConfiguration,
 }
 
 /// The channel identifier for channels in the android auto protocol
@@ -532,24 +555,26 @@ impl FrameHeaderReceiver {
     ) -> Result<Option<FrameHeader>, FrameReceiptError> {
         if self.channel_id.is_none() {
             let mut b = [0u8];
-            stream.read_exact(&mut b).await.map_err(|e| {
-                match e.kind() {
+            stream
+                .read_exact(&mut b)
+                .await
+                .map_err(|e| match e.kind() {
                     std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
                     std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                     _ => FrameReceiptError::UnexpectedDuringFrameChannel(e),
-                }
-            })?;
+                })?;
             self.channel_id = ChannelId::try_from(b[0]).ok();
         }
         if let Some(channel_id) = &self.channel_id {
             let mut b = [0u8];
-            stream.read_exact(&mut b).await.map_err(|e| {
-                match e.kind() {
+            stream
+                .read_exact(&mut b)
+                .await
+                .map_err(|e| match e.kind() {
                     std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
                     std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                     _ => FrameReceiptError::UnexpectedDuringFrameHeader(e),
-                }
-            })?;
+                })?;
             let mut a = FrameHeaderContents::new(false, FrameHeaderType::Single, false);
             a.0 = b[0];
             let fh = FrameHeader {
@@ -658,24 +683,26 @@ impl AndroidAutoFrameReceiver {
         if self.len.is_none() {
             if header.frame.get_frame_type() == FrameHeaderType::First {
                 let mut p = [0u8; 6];
-                stream.read_exact(&mut p).await.map_err(|e| {
-                    match e.kind() {
+                stream
+                    .read_exact(&mut p)
+                    .await
+                    .map_err(|e| match e.kind() {
                         std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
                         std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                         _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
-                    }
-                })?;
+                    })?;
                 let len = u16::from_be_bytes([p[0], p[1]]);
                 self.len.replace(len);
             } else {
                 let mut p = [0u8; 2];
-                stream.read_exact(&mut p).await.map_err(|e| {
-                    match e.kind() {
+                stream
+                    .read_exact(&mut p)
+                    .await
+                    .map_err(|e| match e.kind() {
                         std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
                         std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                         _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
-                    }
-                })?;
+                    })?;
                 let len = u16::from_be_bytes(p);
                 self.len.replace(len);
             }
@@ -689,7 +716,9 @@ impl AndroidAutoFrameReceiver {
             let mut cursor = Cursor::new(&data_frame);
             let mut index = 0;
             loop {
-                let asdf = ssl_stream.read_tls(&mut cursor).map_err(|e| FrameReceiptError::TlsReadError(e) )?;
+                let asdf = ssl_stream
+                    .read_tls(&mut cursor)
+                    .map_err(|e| FrameReceiptError::TlsReadError(e))?;
                 let _ = ssl_stream
                     .process_new_packets()
                     .map_err(|e| FrameReceiptError::TlsProcessingError(e))?;
@@ -705,13 +734,14 @@ impl AndroidAutoFrameReceiver {
 
         if let Some(len) = self.len.take() {
             let mut data_frame = vec![0u8; len as usize];
-            stream.read_exact(&mut data_frame).await.map_err(|e| {
-                match e.kind() {
+            stream
+                .read_exact(&mut data_frame)
+                .await
+                .map_err(|e| match e.kind() {
                     std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
                     std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                     _ => FrameReceiptError::UnexpectedDuringFrameContents(e),
-                }
-            })?;
+                })?;
             let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
                 let data_plain = if header.frame.get_encryption() {
                     decrypt(ssl_stream, len, data_frame)?
@@ -808,10 +838,11 @@ trait ChannelHandlerTrait {
     ) -> Result<(), FrameIoError>;
 
     /// Construct the channeldescriptor with the channel handler so it can be conveyed to the compatible android auto device
-    fn build_channel(
+    fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
         config: &AndroidAutoConfiguration,
         chanid: ChannelId,
+        main: &T,
     ) -> Option<ChannelDescriptor>;
 
     /// Set the list of all channels for the current channel. Only used for the control channel. This is because the control channel must be created first.
@@ -1008,12 +1039,10 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
             if l.is_ok() {
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
-                w.write_all(&d2).await.map_err(|e| {
-                    match e.kind() {
-                        std::io::ErrorKind::TimedOut => SslHandshakeError::Timeout,
-                        std::io::ErrorKind::UnexpectedEof => SslHandshakeError::Disconnected,
-                        _ => SslHandshakeError::Unexpected(e),
-                    }
+                w.write_all(&d2).await.map_err(|e| match e.kind() {
+                    std::io::ErrorKind::TimedOut => SslHandshakeError::Timeout,
+                    std::io::ErrorKind::UnexpectedEof => SslHandshakeError::Disconnected,
+                    _ => SslHandshakeError::Unexpected(e),
                 })?;
             }
         }
@@ -1035,12 +1064,10 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
             if l.is_ok() {
                 let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                 let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
-                w.write_all(&d2).await.map_err(|e| {
-                    match e.kind() {
-                        std::io::ErrorKind::TimedOut => SslHandshakeError::Timeout,
-                        std::io::ErrorKind::UnexpectedEof => SslHandshakeError::Disconnected,
-                        _ => SslHandshakeError::Unexpected(e),
-                    }
+                w.write_all(&d2).await.map_err(|e| match e.kind() {
+                    std::io::ErrorKind::TimedOut => SslHandshakeError::Timeout,
+                    std::io::ErrorKind::UnexpectedEof => SslHandshakeError::Disconnected,
+                    _ => SslHandshakeError::Unexpected(e),
                 })?;
             }
         }
@@ -1073,12 +1100,10 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
         let mut s = self.writer.lock().await;
         let mut ssl_stream = self.ssl_client.lock().await;
         let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
-        s.write_all(&d2).await.map_err(|e| {
-            match e.kind() {
-                std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
-                std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
-                _ => FrameTransmissionError::Unexpected(e),
-            }
+        s.write_all(&d2).await.map_err(|e| match e.kind() {
+            std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
+            std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
+            _ => FrameTransmissionError::Unexpected(e),
         })
     }
 
@@ -1090,12 +1115,10 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
         let mut s = self.writer.lock().await;
         let mut ssl_stream = self.ssl_client.lock().await;
         let d2: Vec<u8> = f.into_frame().await.build_vec(Some(&mut *ssl_stream)).await;
-        s.write_all(&d2).await.map_err(|e| {
-            match e.kind() {
-                std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
-                std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
-                _ => FrameTransmissionError::Unexpected(e),
-            }
+        s.write_all(&d2).await.map_err(|e| match e.kind() {
+            std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
+            std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
+            _ => FrameTransmissionError::Unexpected(e),
         })
     }
 }
@@ -1306,21 +1329,24 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
         let aautocertpem = rustls::pki_types::pem::from_buf(&mut br)
             .expect("Failed to parse pem for aauto server")
             .expect("Invalid pem sert vor aauto server");
-        CertificateDer::from_pem(aautocertpem.0, aautocertpem.1).ok_or(ClientError::InvalidRootCert)?
+        CertificateDer::from_pem(aautocertpem.0, aautocertpem.1)
+            .ok_or(ClientError::InvalidRootCert)?
     };
     let cert = {
         let mut br = std::io::Cursor::new(cert::CERTIFICATE.to_string().as_bytes().to_vec());
         let aautocertpem = rustls::pki_types::pem::from_buf(&mut br)
             .expect("Failed to parse pem for aauto client")
             .expect("Invalid pem cert for aauto client");
-        CertificateDer::from_pem(aautocertpem.0, aautocertpem.1).ok_or(ClientError::InvalidClientCertificate)?
+        CertificateDer::from_pem(aautocertpem.0, aautocertpem.1)
+            .ok_or(ClientError::InvalidClientCertificate)?
     };
     let key = {
         let mut br = std::io::Cursor::new(cert::PRIVATE_KEY.to_string().as_bytes().to_vec());
         let aautocertpem = rustls::pki_types::pem::from_buf(&mut br)
             .expect("Failed to parse pem for aauto client")
             .expect("Invalid pem cert for aauto client");
-        rustls::pki_types::PrivateKeyDer::from_pem(aautocertpem.0, aautocertpem.1).ok_or(ClientError::InvalidClientPrivateKey)?
+        rustls::pki_types::PrivateKeyDer::from_pem(aautocertpem.0, aautocertpem.1)
+            .ok_or(ClientError::InvalidClientPrivateKey)?
     };
     let cert = vec![cert];
     root_store
@@ -1343,12 +1369,15 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
     let message_recv = main.get_receiver().await;
     let sm2 = sm.clone();
     let _task2 = if let Some(mut msgr) = message_recv {
-        let jh: tokio::task::JoinHandle<Result<(), FrameTransmissionError>> = tokio::task::spawn(async move {
-            while let Some(m) = msgr.recv().await {
-                sm2.write_sendable(m).await.inspect_err(|e| log::error!("Error passing message: {:?}", e))?;
-            }
-            Ok(())
-        });
+        let jh: tokio::task::JoinHandle<Result<(), FrameTransmissionError>> =
+            tokio::task::spawn(async move {
+                while let Some(m) = msgr.recv().await {
+                    sm2.write_sendable(m)
+                        .await
+                        .inspect_err(|e| log::error!("Error passing message: {:?}", e))?;
+                }
+                Ok(())
+            });
         Some(DroppingJoinHandle { handle: jh })
     } else {
         None
@@ -1368,17 +1397,19 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
         if main.supports_audio_output().is_some() {
             channel_handlers.push(MediaAudioChannelHandler {}.into());
             channel_handlers.push(SpeechAudioChannelHandler {}.into());
-            channel_handlers.push(SystemAudioChannelHandler {}.into());    
+            channel_handlers.push(SystemAudioChannelHandler {}.into());
         }
         channel_handlers.push(AvInputChannelHandler {}.into());
         channel_handlers.push(BluetoothChannelHandler {}.into());
-        channel_handlers.push(NavigationChannelHandler {}.into());
+        if main.supports_navigation().is_some() {
+            channel_handlers.push(NavigationChannelHandler {}.into());
+        }
         channel_handlers.push(MediaStatusChannelHandler {}.into());
 
         let mut chans = Vec::new();
         for (index, handler) in channel_handlers.iter().enumerate() {
             let chan: ChannelId = index as u8;
-            if let Some(chan) = handler.build_channel(&config, chan) {
+            if let Some(chan) = handler.build_channel(&config, chan, main) {
                 chans.push(chan);
             }
         }
@@ -1395,8 +1426,9 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
     }
     log::debug!("Got a connection from {:?}", addr);
     sm.write_frame(AndroidAutoControlMessage::VersionRequest.into())
-        .await.map_err(|e| {
-            let e2 : FrameIoError = e.into();
+        .await
+        .map_err(|e| {
+            let e2: FrameIoError = e.into();
             e2
         })?;
     let mut fr2 = AndroidAutoFrameReceiver::new();
@@ -1405,9 +1437,7 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
     loop {
         if let Ok(f) = sm.read_frame(&mut fr2).await {
             if let Some(handler) = channel_handlers.get(f.header.channel_id as usize) {
-                handler
-                    .receive_data(f, &sm, &config, main)
-                    .await?;
+                handler.receive_data(f, &sm, &config, main).await?;
             } else {
                 panic!("Unknown channel id: {:?}", f.header.channel_id);
             }

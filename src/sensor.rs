@@ -2,10 +2,10 @@
 
 use super::{
     AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoControlMessage,
-    AndroidAutoFrame, ChannelDescriptor, ChannelHandlerTrait, ChannelId,
-    FrameHeader, FrameHeaderContents, FrameHeaderType,
+    AndroidAutoFrame, ChannelDescriptor, ChannelHandlerTrait, ChannelId, FrameHeader,
+    FrameHeaderContents, FrameHeaderType,
 };
-use crate::{StreamMux, Wifi};
+use crate::{AndroidAutoMainTrait, StreamMux, Wifi};
 use protobuf::Message;
 
 /// A message about sensors in android auto
@@ -89,11 +89,12 @@ impl TryFrom<&AndroidAutoFrame> for SensorMessage {
 pub struct SensorChannelHandler {}
 
 impl ChannelHandlerTrait for SensorChannelHandler {
-    fn build_channel(
+    fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
         _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
-    ) -> Option<ChannelDescriptor> {
+        _main: &T,
+    ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
         let mut sensor = Wifi::SensorChannel::new();
         let mut sensors = Vec::new();
@@ -180,28 +181,6 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                 }
             }
             return Ok(());
-        }
-        let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
-        if let Ok(msg2) = msg2 {
-            match msg2 {
-                AndroidAutoControlMessage::ShutdownRequest(_) => unimplemented!(),
-                AndroidAutoControlMessage::ShutdownResponse => unimplemented!(),
-                AndroidAutoControlMessage::PingResponse(_) => unimplemented!(),
-                AndroidAutoControlMessage::PingRequest(_) => unimplemented!(),
-                AndroidAutoControlMessage::AudioFocusRequest(_) => unimplemented!(),
-                AndroidAutoControlMessage::AudioFocusResponse(_) => unimplemented!(),
-                AndroidAutoControlMessage::ServiceDiscoveryRequest(_) => unimplemented!(),
-                AndroidAutoControlMessage::ServiceDiscoveryResponse(_) => unimplemented!(),
-                AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
-                AndroidAutoControlMessage::SslHandshake(_) => unimplemented!(),
-                AndroidAutoControlMessage::VersionRequest => unimplemented!(),
-                AndroidAutoControlMessage::VersionResponse {
-                    major: _,
-                    minor: _,
-                    status: _,
-                } => unimplemented!(),
-            }
-            //return Ok(());
         }
         todo!("{:x?}", msg);
     }

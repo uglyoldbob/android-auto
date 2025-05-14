@@ -2,16 +2,20 @@
 
 use protobuf::Message;
 
-use crate::{common::AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, AvChannelMessage, ChannelHandlerTrait, ChannelId, StreamMux, Wifi};
+use crate::{
+    AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, AvChannelMessage,
+    ChannelHandlerTrait, ChannelId, StreamMux, Wifi, common::AndroidAutoCommonMessage,
+};
 
 /// The handler for the media audio channel for the android auto protocol
 pub struct MediaAudioChannelHandler {}
 
 impl ChannelHandlerTrait for MediaAudioChannelHandler {
-    fn build_channel(
+    fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
         _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
+        _main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = Wifi::ChannelDescriptor::new();
         chan.set_channel_id(chanid as u32);
@@ -55,7 +59,11 @@ impl ChannelHandlerTrait for MediaAudioChannelHandler {
                             status = true;
                         }
                     }
-                    m2.set_status(if status { Wifi::status::Enum::OK } else { Wifi::status::Enum::FAIL });
+                    m2.set_status(if status {
+                        Wifi::status::Enum::OK
+                    } else {
+                        Wifi::status::Enum::FAIL
+                    });
                     stream
                         .write_frame(
                             AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),

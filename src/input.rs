@@ -2,7 +2,11 @@
 
 use protobuf::Message;
 
-use crate::{common::AndroidAutoCommonMessage, frame_header::FrameHeaderContents, AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, ChannelHandlerTrait, ChannelId, FrameHeader, FrameHeaderType, StreamMux, Wifi};
+use crate::{
+    AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, ChannelHandlerTrait,
+    ChannelId, FrameHeader, FrameHeaderType, StreamMux, Wifi, common::AndroidAutoCommonMessage,
+    frame_header::FrameHeaderContents,
+};
 
 /// A message about binding input buttons on a compatible android auto head unit
 #[derive(Debug)]
@@ -85,29 +89,36 @@ impl TryFrom<&AndroidAutoFrame> for InputMessage {
 pub struct InputChannelHandler {}
 
 impl ChannelHandlerTrait for InputChannelHandler {
-    fn build_channel(
+    fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
+        main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
-        let mut chan = Wifi::ChannelDescriptor::new();
-        chan.set_channel_id(chanid as u32);
-        let mut ichan = Wifi::InputChannel::new();
-        if let Some((w, h)) = config.touchscreen {
-            let mut tc = Wifi::TouchConfig::new();
-            tc.set_height(h as u32);
-            tc.set_width(w as u32);
-            ichan.touch_screen_config.0.replace(Box::new(tc));
+        if let Some(ic) = main.supports_input() {
+            let mut chan = Wifi::ChannelDescriptor::new();
+            chan.set_channel_id(chanid as u32);
+            let mut ichan = Wifi::InputChannel::new();
+            let ics = ic.retrieve_input_configuration();
+            if let Some((w, h)) = ics.touchscreen {
+                let mut tc = Wifi::TouchConfig::new();
+                tc.set_height(h as u32);
+                tc.set_width(w as u32);
+                ichan.touch_screen_config.0.replace(Box::new(tc));
+            }
+            for c in &ics.keycodes {
+                log::error!("Keycode {} added", c);
+                ichan.supported_keycodes.push(*c);
+            }
+            chan.input_channel.0.replace(Box::new(ichan));
+            if !chan.is_initialized() {
+                panic!("Channel not initialized?");
+            }
+            Some(chan)
         }
-        for c in &config.keycodes_supported {
-            log::error!("Keycode {} added", c);
-            ichan.supported_keycodes.push(*c);
+        else {
+            None
         }
-        chan.input_channel.0.replace(Box::new(ichan));
-        if !chan.is_initialized() {
-            panic!("Channel not initialized?");
-        }
-        Some(chan)
     }
 
     async fn receive_data<
@@ -128,9 +139,10 @@ impl ChannelHandlerTrait for InputChannelHandler {
                 InputMessage::BindingRequest(chan, m) => {
                     let mut status = false;
                     if let Some(i) = main.supports_input() {
+                        let ics = i.retrieve_input_configuration();
                         status = true;
                         for c in &m.scan_codes {
-                            if !config.keycodes_supported.contains(&(*c as u32)) {
+                            if !ics.keycodes.contains(&(*c as u32)) {
                                 status = false;
                                 break;
                             }
@@ -141,7 +153,11 @@ impl ChannelHandlerTrait for InputChannelHandler {
                         }
                     }
                     let mut m2 = Wifi::BindingResponse::new();
-                    m2.set_status(if status { Wifi::status::Enum::OK } else { Wifi::status::Enum::FAIL });
+                    m2.set_status(if status {
+                        Wifi::status::Enum::OK
+                    } else {
+                        Wifi::status::Enum::FAIL
+                    });
                     stream
                         .write_frame(InputMessage::BindingResponse(chan, m2).into())
                         .await?;

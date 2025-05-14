@@ -2,16 +2,20 @@
 
 use protobuf::Message;
 
-use crate::{common::AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, ChannelHandlerTrait, ChannelId, StreamMux, Wifi};
+use crate::{
+    AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, ChannelHandlerTrait,
+    ChannelId, StreamMux, Wifi, common::AndroidAutoCommonMessage,
+};
 
 /// Handles the av input channel of the android auto protocol
 pub struct AvInputChannelHandler {}
 
 impl ChannelHandlerTrait for AvInputChannelHandler {
-    fn build_channel(
+    fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
         _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
+        _main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = Wifi::ChannelDescriptor::new();
         chan.set_channel_id(chanid as u32);

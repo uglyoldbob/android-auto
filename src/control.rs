@@ -42,6 +42,10 @@ pub enum AndroidAutoControlMessage {
     ShutdownRequest(Wifi::ShutdownRequest),
     /// A shutdown response
     ShutdownResponse,
+    /// Navigation focus request
+    NavigationFocusRequest(Wifi::NavigationFocusRequest),
+    /// Navigation focus response
+    NavigationFocusResponse(Wifi::NavigationFocusResponse),
 }
 
 #[cfg(feature = "wireless")]
@@ -66,7 +70,13 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
                             Err(e) => Err(format!("Invalid ping request: {}", e)),
                         }
                     }
-                    Wifi::ControlMessage::NAVIGATION_FOCUS_REQUEST => unimplemented!(),
+                    Wifi::ControlMessage::NAVIGATION_FOCUS_REQUEST => {
+                        let m = Wifi::NavigationFocusRequest::parse_from_bytes(&value.data[2..]);
+                        match m {
+                            Ok(m) => Ok(AndroidAutoControlMessage::NavigationFocusRequest(m)),
+                            Err(e) => Err(format!("Invalid request: {}", e)),
+                        }
+                    }
                     Wifi::ControlMessage::NAVIGATION_FOCUS_RESPONSE => unimplemented!(),
                     Wifi::ControlMessage::SHUTDOWN_REQUEST => {
                         let m = Wifi::ShutdownRequest::parse_from_bytes(&value.data[2..]);
@@ -133,6 +143,23 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
 impl From<AndroidAutoControlMessage> for AndroidAutoFrame {
     fn from(value: AndroidAutoControlMessage) -> Self {
         match value {
+            AndroidAutoControlMessage::NavigationFocusRequest(_) => unimplemented!(),
+            AndroidAutoControlMessage::NavigationFocusResponse(m) => {
+                let mut data = m.write_to_bytes().unwrap();
+                let t = Wifi::ControlMessage::NAVIGATION_FOCUS_RESPONSE as u16;
+                let t = t.to_be_bytes();
+                let mut m = Vec::new();
+                m.push(t[0]);
+                m.push(t[1]);
+                m.append(&mut data);
+                AndroidAutoFrame {
+                    header: FrameHeader {
+                        channel_id: 0,
+                        frame: FrameHeaderContents::new(true, FrameHeaderType::Single, false),
+                    },
+                    data: m,
+                }
+            }
             AndroidAutoControlMessage::ShutdownRequest(_) => unimplemented!(),
             AndroidAutoControlMessage::ShutdownResponse => {
                 let m = Wifi::ShutdownResponse::new();
@@ -322,10 +349,11 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         inner.channels = chans;
     }
 
-    fn build_channel(
+    fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
-        _config: &AndroidAutoConfiguration,
-        _chanid: ChannelId,
+        config: &AndroidAutoConfiguration,
+        chanid: ChannelId,
+        main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
         None
     }
@@ -344,6 +372,15 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
+                AndroidAutoControlMessage::NavigationFocusResponse(_) => unimplemented!(),
+                AndroidAutoControlMessage::NavigationFocusRequest(m) => {
+                    log::error!("Received navigation focus request {}", m.type_());
+                    let mut m2 = Wifi::NavigationFocusResponse::new();
+                    m2.set_type(2);
+                    stream
+                        .write_frame(AndroidAutoControlMessage::NavigationFocusResponse(m2).into())
+                        .await?;
+                }
                 AndroidAutoControlMessage::ShutdownResponse => unimplemented!(),
                 AndroidAutoControlMessage::ShutdownRequest(m) => {
                     if m.reason() == Wifi::shutdown_reason::Enum::QUIT {

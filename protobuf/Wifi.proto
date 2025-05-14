@@ -830,3 +830,105 @@ message ShutdownRequest
 message ShutdownResponse
 {
 }
+
+message NavigationFocusRequest
+{
+    required uint32 type = 1;
+}
+
+message NavigationFocusResponse
+{
+    required uint32 type = 1;
+}
+
+message NavigationChannelMessage
+{
+   enum Enum
+    {
+        NONE = 0x0000;
+        STATUS = 0x8003;
+        TURN_EVENT = 0x8004;
+        DISTANCE_EVENT = 0x8005;
+    }
+}
+
+message NavigationStatus
+{
+    required Enum status = 1;
+    enum Enum
+    {
+        UNAVAILABLE = 0;
+        ACTIVE = 1;
+        INACTIVE = 2;
+        REROUTING = 3;
+    }
+}
+
+message ManeuverDirection
+{
+    enum Enum
+    {
+        UNKNOWN = 0;
+        LEFT = 1;
+        RIGHT = 2;
+        UNSPECIFIED = 3;
+    }
+}
+
+message ManeuverType
+{
+    enum Enum
+    {
+        UNKNOWN = 0;
+        DEPART = 1;
+        NAME_CHANGE = 2;
+        SLIGHT_TURN = 3;
+        TURN = 4;
+        SHARP_TURN = 5;
+        U_TURN = 6;
+        ON_RAMP = 7;
+        OFF_RAMP = 8;
+        FORK = 9;
+        MERGE = 10;
+        ROUNDABOUT_ENTER = 11;
+        ROUNDABOUT_EXIT = 12;
+        ROUNDABOUT_ENTER_AND_EXIT = 13;
+        STRAIGHT = 14;
+        FERRY_BOAT = 16;
+        FERRY_TRAIN = 17;
+        DESTINATION = 19;
+    }
+}
+
+message DistanceUnit
+{
+    enum Enum
+    {
+        UNKNOWN = 0;
+        METERS = 1;
+        KILOMETERS = 2;
+        KILOMETERS_PARTIAL = 3;
+        MILES = 4;
+        MILES_PARTIAL = 5;
+        FEET = 6;
+        YARDS = 7;
+    }
+}
+
+message NavigationDistanceEvent
+{
+    required uint32 meters = 1;
+    required uint32 timeToStepSeconds = 2;
+    required uint32 distanceToStepMillis = 3;
+    required DistanceUnit.Enum distanceUnit = 4;
+}
+
+message NavigationTurnEvent
+{
+    required string street_name = 1;
+    required ManeuverDirection.Enum maneuverDirection = 2;
+    required ManeuverType.Enum maneuverType = 3;
+    required bytes turnImage = 4;
+    required uint32 roundaboutExitNumber = 5;
+    required uint32 roundaboutExitAngle = 6;
+}
