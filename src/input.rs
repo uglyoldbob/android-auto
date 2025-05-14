@@ -87,16 +87,22 @@ pub struct InputChannelHandler {}
 impl ChannelHandlerTrait for InputChannelHandler {
     fn build_channel(
         &self,
-        _config: &AndroidAutoConfiguration,
+        config: &AndroidAutoConfiguration,
         chanid: ChannelId,
     ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = Wifi::ChannelDescriptor::new();
         chan.set_channel_id(chanid as u32);
         let mut ichan = Wifi::InputChannel::new();
-        let mut tc = Wifi::TouchConfig::new();
-        tc.set_height(480);
-        tc.set_width(800);
-        ichan.touch_screen_config.0.replace(Box::new(tc));
+        if let Some((w, h)) = config.touchscreen {
+            let mut tc = Wifi::TouchConfig::new();
+            tc.set_height(h as u32);
+            tc.set_width(w as u32);
+            ichan.touch_screen_config.0.replace(Box::new(tc));
+        }
+        for c in &config.keycodes_supported {
+            log::error!("Keycode {} added", c);
+            ichan.supported_keycodes.push(*c);
+        }
         chan.input_channel.0.replace(Box::new(ichan));
         if !chan.is_initialized() {
             panic!("Channel not initialized?");
@@ -112,16 +118,30 @@ impl ChannelHandlerTrait for InputChannelHandler {
         &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
-        _config: &AndroidAutoConfiguration,
-        _main: &T,
+        config: &AndroidAutoConfiguration,
+        main: &T,
     ) -> Result<(), super::FrameIoError> {
         let channel = msg.header.channel_id;
         let msg2: Result<InputMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
-                InputMessage::BindingRequest(chan, _m) => {
+                InputMessage::BindingRequest(chan, m) => {
+                    let mut status = false;
+                    if let Some(i) = main.supports_input() {
+                        status = true;
+                        for c in &m.scan_codes {
+                            if !config.keycodes_supported.contains(&(*c as u32)) {
+                                status = false;
+                                break;
+                            }
+                            if i.binding_request(*c as u32).await.is_err() {
+                                status = false;
+                                break;
+                            }
+                        }
+                    }
                     let mut m2 = Wifi::BindingResponse::new();
-                    m2.set_status(Wifi::status::Enum::OK);
+                    m2.set_status(if status { Wifi::status::Enum::OK } else { Wifi::status::Enum::FAIL });
                     stream
                         .write_frame(InputMessage::BindingResponse(chan, m2).into())
                         .await?;

@@ -662,6 +662,10 @@ message AVChannelStartIndication
     required uint32 config = 2;
 }
 
+message AVChannelStopIndication
+{
+}
+
 message MediaInfoChannelMessage
 {
    enum Enum

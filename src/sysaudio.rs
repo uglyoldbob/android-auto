@@ -40,7 +40,7 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
-        _main: &T,
+        main: &T,
     ) -> Result<(), super::FrameIoError> {
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
@@ -49,7 +49,13 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
-                    m2.set_status(Wifi::status::Enum::OK);
+                    let mut status = false;
+                    if let Some(a) = main.supports_audio_output() {
+                        if a.open_channel(crate::AudioChannelType::System).await.is_ok() {
+                            status = true;
+                        }
+                    }
+                    m2.set_status(if status { Wifi::status::Enum::OK } else { Wifi::status::Enum::FAIL });
                     stream
                         .write_frame(
                             AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
@@ -63,8 +69,10 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AvChannelMessage::MediaIndicationAck(_, _) => unimplemented!(),
-                AvChannelMessage::MediaIndication(_, _, _) => {
-                    log::error!("Received media data for system audio");
+                AvChannelMessage::MediaIndication(_chan, _timestamp, data) => {
+                    if let Some(a) = main.supports_audio_output() {
+                        a.receive_audio(crate::AudioChannelType::System, data).await
+                    }
                 }
                 AvChannelMessage::SetupRequest(_chan, _m) => {
                     let mut m2 = Wifi::AVChannelSetupResponse::new();
@@ -85,7 +93,16 @@ impl ChannelHandlerTrait for SystemAudioChannelHandler {
                         .await?;
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
-                AvChannelMessage::StartIndication(_, _) => {}
+                AvChannelMessage::StartIndication(_, _) => {
+                    if let Some(a) = main.supports_audio_output() {
+                        a.start_audio(crate::AudioChannelType::System).await;
+                    }
+                }
+                AvChannelMessage::StopIndication(_, _) => {
+                    if let Some(a) = main.supports_audio_output() {
+                        a.stop_audio(crate::AudioChannelType::System).await;
+                    }
+                }
             }
             return Ok(());
         }

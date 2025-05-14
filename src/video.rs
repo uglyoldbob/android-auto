@@ -38,7 +38,7 @@ impl VideoChannelHandler {
 impl ChannelHandlerTrait for VideoChannelHandler {
     fn build_channel(
         &self,
-        _config: &AndroidAutoConfiguration,
+        config: &AndroidAutoConfiguration,
         chanid: ChannelId,
     ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = Wifi::ChannelDescriptor::new();
@@ -50,9 +50,9 @@ impl ChannelHandlerTrait for VideoChannelHandler {
         let mut vconfs = Vec::new();
         vconfs.push({
             let mut vc = Wifi::VideoConfig::new();
-            vc.set_video_resolution(Wifi::video_resolution::Enum::_480p);
-            vc.set_video_fps(Wifi::video_fps::Enum::_60);
-            vc.set_dpi(111);
+            vc.set_video_resolution(config.video.resolution);
+            vc.set_video_fps(config.video.fps);
+            vc.set_dpi(config.video.dpi as u32);
             vc.set_margin_height(0);
             vc.set_margin_width(0);
             if !vc.is_initialized() {
@@ -169,6 +169,10 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                 AvChannelMessage::StartIndication(_chan, m) => {
                     let mut inner = self.inner.lock().unwrap();
                     inner.session = Some(m.session());
+                }
+                AvChannelMessage::StopIndication(_chan, _m) => {
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.session.take();
                 }
             }
             return Ok(());
