@@ -1,7 +1,7 @@
 //! Contains code for the the video channel
 
 use super::{
-    AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait,
+    AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame,
     AvChannelMessage, ChannelHandlerTrait, ChannelId,
 };
 use crate::{StreamMux, Wifi};
@@ -81,7 +81,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         main: &T,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), super::FrameIoError> {
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -121,7 +121,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                             m2.set_session(
                                 inner
                                     .session
-                                    .ok_or(std::io::Error::other("Missing video session"))?,
+                                    .ok_or(super::FrameSequenceError::VideoChannelNotOpen)?,
                             );
                         }
                         m2.set_value(1);

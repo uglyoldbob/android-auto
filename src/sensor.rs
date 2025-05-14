@@ -2,7 +2,7 @@
 
 use super::{
     AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoControlMessage,
-    AndroidAutoFrame, AndroidAutoMainTrait, ChannelDescriptor, ChannelHandlerTrait, ChannelId,
+    AndroidAutoFrame, ChannelDescriptor, ChannelHandlerTrait, ChannelId,
     FrameHeader, FrameHeaderContents, FrameHeaderType,
 };
 use crate::{StreamMux, Wifi};
@@ -128,7 +128,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
         _main: &T,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), super::FrameIoError> {
         let channel = msg.header.channel_id;
         let msg2: Result<SensorMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {

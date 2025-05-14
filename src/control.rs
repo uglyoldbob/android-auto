@@ -340,7 +340,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         stream: &StreamMux<U, V>,
         config: &AndroidAutoConfiguration,
         _main: &T,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), super::FrameIoError> {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
@@ -350,7 +350,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         stream
                             .write_frame(AndroidAutoControlMessage::ShutdownResponse.into())
                             .await?;
-                        return Err(std::io::Error::other("Shutdown requested by peer"));
+                        return Err(super::FrameIoError::ShutdownRequested);
                     }
                 }
                 AndroidAutoControlMessage::PingResponse(_) => {}
@@ -423,6 +423,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         stream
                             .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
                             .await?;
+                        log::info!("SSL Handshake complete");
                     }
                 }
                 AndroidAutoControlMessage::VersionRequest => unimplemented!(),
@@ -433,7 +434,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                 } => {
                     if status == 0xFFFF {
                         log::error!("Version mismatch");
-                        return Err(std::io::Error::other("Version mismatch"));
+                        return Err(super::FrameIoError::IncompatibleVersion(major, minor));
                     }
                     log::info!("Android auto client version: {}.{}", major, minor);
                     stream.start_handshake().await?;
