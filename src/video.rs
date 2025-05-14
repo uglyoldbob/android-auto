@@ -29,7 +29,9 @@ pub struct VideoChannelHandler {
 impl VideoChannelHandler {
     /// construct a new self
     pub fn new() -> Self {
-        Self { inner: std::sync::Mutex::new(InnerChannelHandler::new()) }
+        Self {
+            inner: std::sync::Mutex::new(InnerChannelHandler::new()),
+        }
     }
 }
 
@@ -117,7 +119,8 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                         {
                             let inner = self.inner.lock().unwrap();
                             m2.set_session(
-                                inner.session
+                                inner
+                                    .session
                                     .ok_or(std::io::Error::other("Missing video session"))?,
                             );
                         }

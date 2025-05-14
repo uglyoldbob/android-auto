@@ -286,6 +286,7 @@ impl From<AndroidAutoControlMessage> for AndroidAutoFrame {
     }
 }
 
+/// The inner data for the channel handler
 struct InnerChannelHandler {
     /// The list of all channels for the head unit. This is filled out after the control channel is created
     channels: Vec<Wifi::ChannelDescriptor>,
