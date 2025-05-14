@@ -219,6 +219,7 @@ pub trait AndroidAutoVideoChannelTrait: AndroidAutoMainTrait {
 }
 
 /// The types of audio channels that can exist
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum AudioChannelType {
     /// Media audio
     Media,
@@ -935,7 +936,13 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
                         Err(e) => Err(format!("Invalid channel open request: {}", e)),
                     }
                 }
-                Wifi::avchannel_message::Enum::STOP_INDICATION => todo!(),
+                Wifi::avchannel_message::Enum::STOP_INDICATION => {
+                    let m = Wifi::AVChannelStopIndication::parse_from_bytes(&value.data[2..]);
+                    match m {
+                        Ok(m) => Ok(Self::StopIndication(value.header.channel_id, m)),
+                        Err(e) => Err(format!("Invalid channel stop request: {}", e)),
+                    }
+                }
                 Wifi::avchannel_message::Enum::SETUP_RESPONSE => unimplemented!(),
                 Wifi::avchannel_message::Enum::AV_MEDIA_ACK_INDICATION => todo!(),
                 Wifi::avchannel_message::Enum::AV_INPUT_OPEN_REQUEST => todo!(),
