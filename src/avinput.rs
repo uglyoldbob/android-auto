@@ -3,8 +3,7 @@
 use protobuf::Message;
 
 use crate::{
-    AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, ChannelHandlerTrait,
-    ChannelId, StreamMux, Wifi, common::AndroidAutoCommonMessage,
+    common::AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, AvChannelMessage, ChannelHandlerTrait, ChannelId, StreamMux, Wifi
 };
 
 /// Handles the av input channel of the android auto protocol
@@ -43,7 +42,7 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
-        _main: &T,
+        main: &T,
     ) -> Result<(), super::FrameIoError> {
         let channel = msg.header.channel_id;
         let msg2: Result<AndroidAutoCommonMessage, String> = (&msg).try_into();
@@ -58,6 +57,36 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
                             AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
                         )
                         .await?;
+                }
+            }
+            return Ok(());
+        }
+        let msg2: Result<AvChannelMessage, String> = (&msg).try_into();
+        if let Ok(msg2) = msg2 {
+            match msg2 {
+                AvChannelMessage::MediaIndicationAck(_, _) => {}
+                AvChannelMessage::MediaIndication(_chan, _timestamp, _data) => unimplemented!(),
+                AvChannelMessage::SetupRequest(_chan, _m) => {
+                    let mut m2 = Wifi::AVChannelSetupResponse::new();
+                    m2.set_max_unacked(10);
+                    m2.set_media_status(Wifi::avchannel_setup_status::Enum::OK);
+                    m2.configs.push(0);
+                    stream
+                        .write_frame(AvChannelMessage::SetupResponse(channel, m2).into())
+                        .await?;
+                }
+                AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
+                AvChannelMessage::VideoFocusRequest(_chan, _m) => unimplemented!(),
+                AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
+                AvChannelMessage::StartIndication(_, _) => {
+                    if let Some(a) = main.supports_audio_input() {
+                        a.start_audio().await;
+                    }
+                }
+                AvChannelMessage::StopIndication(_, _) => {
+                    if let Some(a) = main.supports_audio_input() {
+                        a.stop_audio().await;
+                    }
                 }
             }
             return Ok(());

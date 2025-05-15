@@ -46,6 +46,8 @@ pub enum AndroidAutoControlMessage {
     NavigationFocusRequest(Wifi::NavigationFocusRequest),
     /// Navigation focus response
     NavigationFocusResponse(Wifi::NavigationFocusResponse),
+    /// A voice session request command
+    VoiceSession(Wifi::VoiceSessionRequest),
 }
 
 #[cfg(feature = "wireless")]
@@ -86,7 +88,13 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
                         }
                     }
                     Wifi::ControlMessage::SHUTDOWN_RESPONSE => unimplemented!(),
-                    Wifi::ControlMessage::VOICE_SESSION_REQUEST => unimplemented!(),
+                    Wifi::ControlMessage::VOICE_SESSION_REQUEST => {
+                        let m = Wifi::VoiceSessionRequest::parse_from_bytes(&value.data[2..]);
+                        match m {
+                            Ok(m) => Ok(AndroidAutoControlMessage::VoiceSession(m)),
+                            Err(e) => Err(format!("Invalid ping response: {}", e)),
+                        }
+                    }
                     Wifi::ControlMessage::AUDIO_FOCUS_RESPONSE => unimplemented!(),
                     Wifi::ControlMessage::PING_RESPONSE => {
                         let m = Wifi::PingResponse::parse_from_bytes(&value.data[2..]);
@@ -143,6 +151,7 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
 impl From<AndroidAutoControlMessage> for AndroidAutoFrame {
     fn from(value: AndroidAutoControlMessage) -> Self {
         match value {
+            AndroidAutoControlMessage::VoiceSession(_) => unimplemented!(),
             AndroidAutoControlMessage::NavigationFocusRequest(_) => unimplemented!(),
             AndroidAutoControlMessage::NavigationFocusResponse(m) => {
                 let mut data = m.write_to_bytes().unwrap();
@@ -351,9 +360,9 @@ impl ChannelHandlerTrait for ControlChannelHandler {
 
     fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
-        config: &AndroidAutoConfiguration,
-        chanid: ChannelId,
-        main: &T,
+        _config: &AndroidAutoConfiguration,
+        _chanid: ChannelId,
+        _main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
         None
     }
@@ -372,6 +381,9 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
+                AndroidAutoControlMessage::VoiceSession(m) => {
+                    log::error!("Received voice session request {:?}", m);
+                }
                 AndroidAutoControlMessage::NavigationFocusResponse(_) => unimplemented!(),
                 AndroidAutoControlMessage::NavigationFocusRequest(m) => {
                     log::error!("Received navigation focus request {}", m.type_());

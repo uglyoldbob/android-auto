@@ -129,7 +129,7 @@ impl ChannelHandlerTrait for InputChannelHandler {
         &self,
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         main: &T,
     ) -> Result<(), super::FrameIoError> {
         let channel = msg.header.channel_id;

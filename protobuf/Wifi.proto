@@ -932,3 +932,8 @@ message NavigationTurnEvent
     required uint32 roundaboutExitNumber = 5;
     required uint32 roundaboutExitAngle = 6;
 }
+
+message VoiceSessionRequest
+{
+    required uint32 type = 1; // 1 = start, 2 = stop
+}
