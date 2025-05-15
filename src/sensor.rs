@@ -93,23 +93,19 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         &self,
         _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
-        _main: &T,
+        main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
         let mut sensor = Wifi::SensorChannel::new();
-        let mut sensors = Vec::new();
-        sensors.push({
-            let mut sensor1 = Wifi::Sensor::new();
-            sensor1.set_type(Wifi::sensor_type::Enum::DRIVING_STATUS);
-            sensor1
-        });
-        sensors.push({
-            let mut sensor1 = Wifi::Sensor::new();
-            sensor1.set_type(Wifi::sensor_type::Enum::NIGHT_DATA);
-            sensor1
-        });
-        for s in sensors {
-            sensor.sensors.push(s);
+        if let Some(snsrs) = main.supports_sensors() {
+            let s = snsrs.get_supported_sensors();
+            for s in &s.sensors {
+                sensor.sensors.push({
+                    let mut sensor1 = Wifi::Sensor::new();
+                    sensor1.set_type(*s);
+                    sensor1
+                });
+            }
         }
         chan.sensor_channel.0.replace(Box::new(sensor));
         chan.set_channel_id(chanid as u32);
@@ -128,7 +124,7 @@ impl ChannelHandlerTrait for SensorChannelHandler {
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         _config: &AndroidAutoConfiguration,
-        _main: &T,
+        main: &T,
     ) -> Result<(), super::FrameIoError> {
         let channel = msg.header.channel_id;
         let msg2: Result<SensorMessage, String> = (&msg).try_into();
@@ -138,30 +134,17 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                 SensorMessage::SensorStartResponse(_, _) => unimplemented!(),
                 SensorMessage::SensorStartRequest(_chan, m) => {
                     let mut m2 = Wifi::SensorStartResponseMessage::new();
-                    m2.set_status(Wifi::status::Enum::OK);
-                    stream
+                    
+                    if let Some(sns) = main.supports_sensors() {
+                        let stat = match sns.start_sensor(m.sensor_type()).await {
+                            Ok(_) => Wifi::status::Enum::OK,
+                            Err(_) => Wifi::status::Enum::FAIL,
+                        };
+                        m2.set_status(stat);
+                            stream
                         .write_frame(SensorMessage::SensorStartResponse(channel, m2).into())
                         .await?;
-
-                    let mut m3 = Wifi::SensorEventIndication::new();
-                    match m.sensor_type() {
-                        Wifi::sensor_type::Enum::DRIVING_STATUS => {
-                            let mut ds = Wifi::DrivingStatus::new();
-                            ds.set_status(Wifi::DrivingStatusEnum::UNRESTRICTED as i32);
-                            m3.driving_status.push(ds);
-                        }
-                        Wifi::sensor_type::Enum::NIGHT_DATA => {
-                            let mut ds = Wifi::NightMode::new();
-                            ds.set_is_night(false);
-                            m3.night_mode.push(ds);
-                        }
-                        _ => {
-                            todo!();
-                        }
-                    };
-                    stream
-                        .write_frame(SensorMessage::Event(channel, m3).into())
-                        .await?;
+                    }
                 }
             }
             return Ok(());

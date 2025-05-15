@@ -4,6 +4,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use std::{
+    collections::HashSet,
     io::{Cursor, Read, Write},
     sync::Arc,
 };
@@ -189,6 +190,11 @@ pub trait AndroidAutoMainTrait: Send + Sync {
         None
     }
 
+    /// Implement this to support sensors
+    fn supports_sensors(&self) -> Option<&dyn AndroidAutoSensorTrait> {
+        None
+    }
+
     /// The android auto device just connected
     async fn connect(&self);
 
@@ -211,6 +217,15 @@ pub trait AndroidAutoWirelessTrait: AndroidAutoMainTrait {
 
     /// Returns wifi details
     fn get_wifi_details(&self) -> NetworkInformation;
+}
+
+/// This trait is implemented by users that support navigation indicators
+#[async_trait::async_trait]
+pub trait AndroidAutoSensorTrait: AndroidAutoMainTrait {
+    /// Returns the types of sensors supported
+    fn get_supported_sensors(&self) -> &SensorInformation;
+    /// Start the indicated sensor
+    async fn start_sensor(&self, stype: Wifi::sensor_type::Enum) -> Result<(), ()>;
 }
 
 /// This trait is implemented by users that support navigation indicators
@@ -324,6 +339,8 @@ pub enum AndroidAutoMessage {
     Input(Wifi::InputEventIndication),
     /// An audio packet message, optional timestamp (microseconds since UNIX_EPOCH) and data
     Audio(Option<u64>, Vec<u8>),
+    /// A sensor event message
+    Sensor(Wifi::SensorEventIndication),
     /// An other message
     Other,
 }
@@ -335,6 +352,8 @@ pub enum SendableChannelType {
     Input,
     /// The audio input channel
     AudioInput,
+    /// The sensor channel
+    Sensor,
     /// Other channel type
     Other,
 }
@@ -355,6 +374,12 @@ impl SendableAndroidAutoMessage {
         let chans = CHANNEL_HANDLERS.read().await;
         for (i, c) in chans.iter().enumerate() {
             match self.channel {
+                SendableChannelType::Sensor => {
+                    if let ChannelHandler::Sensor(_) = c {
+                        chan = Some(i as u8);
+                        break;
+                    }
+                }
                 SendableChannelType::AudioInput => {
                     if let ChannelHandler::AvInput(_) = c {
                         chan = Some(i as u8);
@@ -393,6 +418,19 @@ impl AndroidAutoMessage {
     /// Convert the message to something that can be sent, if possible
     pub fn sendable(self) -> SendableAndroidAutoMessage {
         match self {
+            Self::Sensor(m) => {
+                let mut data = m.write_to_bytes().unwrap();
+                let t = Wifi::sensor_channel_message::Enum::SENSOR_EVENT_INDICATION as u16;
+                let t = t.to_be_bytes();
+                let mut m = Vec::new();
+                m.push(t[0]);
+                m.push(t[1]);
+                m.append(&mut data);
+                SendableAndroidAutoMessage {
+                    channel: SendableChannelType::Sensor,
+                    data: m,
+                }
+            }
             Self::Input(m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::input_channel_message::Enum::INPUT_EVENT_INDICATION as u16;
@@ -430,6 +468,13 @@ struct AndroidAutoRawBluetoothMessage {
     t: u16,
     /// The message contained in the message
     message: Vec<u8>,
+}
+
+/// The sensor information supported by the user for android auto
+#[derive(Clone)]
+pub struct SensorInformation {
+    /// The sensor types supported
+    pub sensors: HashSet<Wifi::sensor_type::Enum>,
 }
 
 /// The wireless network information to relay to the compatible android auto device
@@ -953,9 +998,11 @@ impl From<AvChannelMessage> for AndroidAutoFrame {
                     let mut tsb = ts.to_be_bytes().to_vec();
                     m.append(&mut tsb);
                     m.append(&mut data);
-                    (Wifi::avchannel_message::Enum::AV_MEDIA_WITH_TIMESTAMP_INDICATION as u16, m)
-                }
-                else {
+                    (
+                        Wifi::avchannel_message::Enum::AV_MEDIA_WITH_TIMESTAMP_INDICATION as u16,
+                        m,
+                    )
+                } else {
                     let mut m = Vec::new();
                     m.append(&mut data);
                     (Wifi::avchannel_message::Enum::AV_MEDIA_INDICATION as u16, m)
@@ -1394,8 +1441,8 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
     let aautocertder = {
         let mut br = std::io::Cursor::new(cert::AAUTO_CERT.to_string().as_bytes().to_vec());
         let aautocertpem = rustls::pki_types::pem::from_buf(&mut br)
-            .expect("Failed to parse pem for aauto server")
-            .expect("Invalid pem sert vor aauto server");
+            .map_err(|_| ClientError::InvalidRootCert)?
+            .ok_or(ClientError::InvalidRootCert)?;
         CertificateDer::from_pem(aautocertpem.0, aautocertpem.1)
             .ok_or(ClientError::InvalidRootCert)?
     };
@@ -1403,29 +1450,32 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
     let client_cert_data_pem = if let Some(custom) = &config.custom_certificate {
         custom
     } else {
-        &(cert::CERTIFICATE.to_string().as_bytes().to_vec(), cert::PRIVATE_KEY.to_string().as_bytes().to_vec())
+        &(
+            cert::CERTIFICATE.to_string().as_bytes().to_vec(),
+            cert::PRIVATE_KEY.to_string().as_bytes().to_vec(),
+        )
     };
 
     let cert = {
         let mut br = std::io::Cursor::new(&client_cert_data_pem.0);
         let aautocertpem = rustls::pki_types::pem::from_buf(&mut br)
-            .expect("Failed to parse pem for aauto client")
-            .expect("Invalid pem cert for aauto client");
+            .map_err(|_| ClientError::InvalidClientCertificate)?
+            .ok_or(ClientError::InvalidClientCertificate)?;
         CertificateDer::from_pem(aautocertpem.0, aautocertpem.1)
             .ok_or(ClientError::InvalidClientCertificate)?
     };
     let key = {
         let mut br = std::io::Cursor::new(&client_cert_data_pem.1);
         let aautocertpem = rustls::pki_types::pem::from_buf(&mut br)
-            .expect("Failed to parse pem for aauto client")
-            .expect("Invalid pem cert for aauto client");
+            .map_err(|_| ClientError::InvalidClientPrivateKey)?
+            .ok_or(ClientError::InvalidClientPrivateKey)?;
         rustls::pki_types::PrivateKeyDer::from_pem(aautocertpem.0, aautocertpem.1)
             .ok_or(ClientError::InvalidClientPrivateKey)?
     };
     let cert = vec![cert];
     root_store
         .add(aautocertder)
-        .expect("Failed to load android auto server cert");
+        .map_err(|_| ClientError::InvalidRootCert)?;
     let root_store = Arc::new(root_store);
     let mut ssl_client_config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store.clone())
@@ -1463,9 +1513,10 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
         if main.supports_input().is_some() {
             channel_handlers.push(InputChannelHandler {}.into());
         }
-        channel_handlers.push(SensorChannelHandler {}.into());
+        if main.supports_sensors().is_some() {
+            channel_handlers.push(SensorChannelHandler {}.into());
+        }
         if main.supports_video().is_some() {
-            log::info!("Setting up video channel");
             channel_handlers.push(VideoChannelHandler::new().into());
         }
         if main.supports_audio_output().is_some() {

@@ -115,8 +115,7 @@ impl ChannelHandlerTrait for InputChannelHandler {
                 panic!("Channel not initialized?");
             }
             Some(chan)
-        }
-        else {
+        } else {
             None
         }
     }
