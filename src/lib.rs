@@ -163,6 +163,13 @@ pub trait AndroidAutoMainTrait: Send + Sync {
         None
     }
 
+    /// Implement this to indicate that bluetooth hardware is possible, return None if bluetooth hardware is not present
+    #[inline(always)]
+    fn supports_bluetooth(&self) -> Option<&dyn AndroidAutoBluetoothTrait> {
+        None
+    }
+    
+
     /// Implement this to support wireless android auto communications
     #[inline(always)]
     fn supports_wireless(&self) -> Option<Arc<dyn AndroidAutoWirelessTrait>> {
@@ -318,6 +325,8 @@ pub trait AndroidAutoInputChannelTrait: AndroidAutoMainTrait {
 pub trait AndroidAutoBluetoothTrait: AndroidAutoMainTrait {
     /// Do something
     async fn do_stuff(&self);
+    /// Get the configuration
+    fn get_config(&self) -> &BluetoothInformation;
 }
 
 /// This is the bluetooth server for initiating wireless android auto on compatible devices.
@@ -544,8 +553,6 @@ pub struct VideoConfiguration {
 /// Provides basic configuration elements for setting up an android auto head unit
 #[derive(Clone)]
 pub struct AndroidAutoConfiguration {
-    /// The bluetooth information
-    pub bluetooth: BluetoothInformation,
     /// The head unit information
     pub unit: HeadUnitInfo,
     /// The android auto client certificate and private key in pem format (only if a custom one is desired)
@@ -1527,7 +1534,9 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
         if main.supports_audio_input().is_some() {
             channel_handlers.push(AvInputChannelHandler {}.into());
         }
-        channel_handlers.push(BluetoothChannelHandler {}.into());
+        if main.supports_bluetooth().is_some() {
+            channel_handlers.push(BluetoothChannelHandler {}.into());
+        }
         if main.supports_navigation().is_some() {
             channel_handlers.push(NavigationChannelHandler {}.into());
         }

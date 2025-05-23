@@ -76,23 +76,26 @@ pub struct BluetoothChannelHandler {}
 impl ChannelHandlerTrait for BluetoothChannelHandler {
     fn build_channel<T: AndroidAutoMainTrait + ?Sized>(
         &self,
-        config: &AndroidAutoConfiguration,
+        _config: &AndroidAutoConfiguration,
         chanid: ChannelId,
         main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
-        let mut chan = ChannelDescriptor::new();
-        chan.set_channel_id(chanid as u32);
-        let mut bchan = Wifi::BluetoothChannel::new();
-        bchan.set_adapter_address(config.bluetooth.address.clone());
-        let meth = Wifi::bluetooth_pairing_method::Enum::HFP;
-        bchan
-            .supported_pairing_methods
-            .push(EnumOrUnknown::new(meth));
-        chan.bluetooth_channel.0.replace(Box::new(bchan));
-        if !chan.is_initialized() {
-            panic!("Channel not initialized?");
-        }
-        Some(chan)
+        main.supports_bluetooth().map(|bc| {
+            let mut chan = ChannelDescriptor::new();
+            chan.set_channel_id(chanid as u32);
+            let mut bchan = Wifi::BluetoothChannel::new();
+            let bluetooth_config = bc.get_config();
+            bchan.set_adapter_address(bluetooth_config.address.clone());
+            let meth = Wifi::bluetooth_pairing_method::Enum::HFP;
+            bchan
+                .supported_pairing_methods
+                .push(EnumOrUnknown::new(meth));
+            chan.bluetooth_channel.0.replace(Box::new(bchan));
+            if !chan.is_initialized() {
+                panic!("Channel not initialized?");
+            }
+            chan    
+        })
     }
 
     async fn receive_data<
