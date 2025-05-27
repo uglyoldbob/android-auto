@@ -487,7 +487,7 @@ pub struct SensorInformation {
 }
 
 /// The wireless network information to relay to the compatible android auto device
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NetworkInformation {
     /// The ssid of the wireless network
     pub ssid: String,
@@ -1333,7 +1333,7 @@ async fn handle_bluetooth_client(
     let mut s = Bluetooth::SocketInfoRequest::new();
     s.set_ip_address(network2.ip.clone());
     s.set_port(network2.port as u32);
-
+    log::info!("Got a bluetooth client");
     let m1 = AndroidAutoBluetoothMessage::SocketInfoRequest(s);
     let m: AndroidAutoRawBluetoothMessage = m1.as_message();
     let mdata: Vec<u8> = m.into();
@@ -1365,6 +1365,7 @@ async fn handle_bluetooth_client(
                 }
                 Bluetooth::MessageId::BLUETOOTH_NETWORK_INFO_REQUEST => {
                     let mut response = Bluetooth::NetworkInfo::new();
+                    log::debug!("Network info for bluetooth response: {:?}", network2);
                     response.set_ssid(network2.ssid.clone());
                     response.set_psk(network2.psk.clone());
                     response.set_mac_addr(network2.mac_addr.clone());
@@ -1395,6 +1396,7 @@ async fn bluetooth_service(
     mut profile: bluetooth_rust::BluetoothRfcommProfile,
     wireless: Arc<dyn AndroidAutoWirelessTrait>,
 ) -> Result<(), String> {
+    log::info!("Starting bluetooth service");
     loop {
         if let Ok(c) = profile.connectable().await {
             let network2 = wireless.get_wifi_details();
@@ -1413,7 +1415,7 @@ async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
 ) -> Result<(), String> {
     let network = wireless.get_wifi_details();
 
-    log::debug!("Listening on port {} for android auto stuff", network.port);
+    log::info!("Starting android auto wireless service on port {}", network.port);
     if let Ok(a) = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", network.port)).await {
         loop {
             if let Ok((stream, addr)) = a.accept().await {
@@ -1443,6 +1445,7 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
     config: AndroidAutoConfiguration,
     main: &T,
 ) -> Result<(), ClientError> {
+    log::info!("Got wifi client: {:?}", addr);
     let mut root_store =
         rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let aautocertder = {
@@ -1589,6 +1592,7 @@ impl AndroidAutoServer {
         js: &mut tokio::task::JoinSet<Result<(), String>>,
         main: T,
     ) -> Result<(), String> {
+        log::info!("Running android auto server");
         if let Some(wireless) = main.supports_wireless() {
             let psettings = bluetooth_rust::BluetoothRfcommProfileSettings {
                 uuid: bluetooth_rust::BluetoothUuid::AndroidAuto
@@ -1611,6 +1615,7 @@ impl AndroidAutoServer {
             };
 
             let profile = wireless.setup_bluetooth_profile(&psettings).await?;
+            log::info!("Setup bluetooth profile is ok?");
             let wireless2 = wireless.clone();
             js.spawn(async move {
                 let e = bluetooth_service(profile, wireless2).await;
