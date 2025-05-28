@@ -100,6 +100,10 @@ pub enum FrameIoError {
     SslHandshake(SslHandshakeError),
     /// A logical error due to frames not being received in the expected order
     Sequence(FrameSequenceError),
+    /// An error occurred opening the audio input channel
+    AudioInputOpenError,
+    /// An error occurred closing the audio input channel
+    AudioInputCloseError,
 }
 
 /// Errors that can occur during the handshake process
@@ -951,6 +955,8 @@ enum AvChannelMessage {
     SetupResponse(ChannelId, Wifi::AVChannelSetupResponse),
     /// Message requesting the focus of the video channel to be set
     VideoFocusRequest(ChannelId, Wifi::VideoFocusRequest),
+    /// Message requesting to open the channel
+    AvChannelOpen(ChannelId, Wifi::AVInputOpenRequest),
     /// Message indication the focus status of the video stream on the head unit
     VideoIndicationResponse(ChannelId, Wifi::VideoFocusIndication),
     /// The stream is about to start
@@ -966,6 +972,7 @@ enum AvChannelMessage {
 impl From<AvChannelMessage> for AndroidAutoFrame {
     fn from(value: AvChannelMessage) -> Self {
         match value {
+            AvChannelMessage::AvChannelOpen(_, _) => unimplemented!(),
             AvChannelMessage::MediaIndicationAck(chan, m) => {
                 let mut data = m.write_to_bytes().unwrap();
                 let t = Wifi::avchannel_message::Enum::AV_MEDIA_ACK_INDICATION as u16;
@@ -1078,14 +1085,14 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
                     let m = Wifi::AVChannelSetupRequest::parse_from_bytes(&value.data[2..]);
                     match m {
                         Ok(m) => Ok(Self::SetupRequest(value.header.channel_id, m)),
-                        Err(e) => Err(format!("Invalid channel open request: {}", e)),
+                        Err(e) => Err(format!("Invalid channel setup request: {}", e)),
                     }
                 }
                 Wifi::avchannel_message::Enum::START_INDICATION => {
                     let m = Wifi::AVChannelStartIndication::parse_from_bytes(&value.data[2..]);
                     match m {
                         Ok(m) => Ok(Self::StartIndication(value.header.channel_id, m)),
-                        Err(e) => Err(format!("Invalid channel open request: {}", e)),
+                        Err(e) => Err(format!("Invalid channel start request: {}", e)),
                     }
                 }
                 Wifi::avchannel_message::Enum::STOP_INDICATION => {
@@ -1097,13 +1104,19 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
                 }
                 Wifi::avchannel_message::Enum::SETUP_RESPONSE => unimplemented!(),
                 Wifi::avchannel_message::Enum::AV_MEDIA_ACK_INDICATION => todo!(),
-                Wifi::avchannel_message::Enum::AV_INPUT_OPEN_REQUEST => todo!(),
+                Wifi::avchannel_message::Enum::AV_INPUT_OPEN_REQUEST => {
+                    let m = Wifi::AVInputOpenRequest::parse_from_bytes(&value.data[2..]);
+                    match m {
+                        Ok(m) => Ok(Self::AvChannelOpen(value.header.channel_id, m)),
+                        Err(e) => Err(format!("Invalid request: {}", e)),
+                    }
+                }
                 Wifi::avchannel_message::Enum::AV_INPUT_OPEN_RESPONSE => todo!(),
                 Wifi::avchannel_message::Enum::VIDEO_FOCUS_REQUEST => {
                     let m = Wifi::VideoFocusRequest::parse_from_bytes(&value.data[2..]);
                     match m {
                         Ok(m) => Ok(Self::VideoFocusRequest(value.header.channel_id, m)),
-                        Err(e) => Err(format!("Invalid channel open request: {}", e)),
+                        Err(e) => Err(format!("Invalid request: {}", e)),
                     }
                 }
                 Wifi::avchannel_message::Enum::VIDEO_FOCUS_INDICATION => unimplemented!(),

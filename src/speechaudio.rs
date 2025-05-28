@@ -79,6 +79,7 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
         let msg2: Result<AvChannelMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
+                AvChannelMessage::AvChannelOpen(_chan, _m) => todo!(),
                 AvChannelMessage::MediaIndicationAck(_, _) => unimplemented!(),
                 AvChannelMessage::MediaIndication(_chan, _timestamp, data) => {
                     if let Some(a) = main.supports_audio_output() {

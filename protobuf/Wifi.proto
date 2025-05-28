@@ -937,3 +937,17 @@ message VoiceSessionRequest
 {
     required uint32 type = 1; // 1 = start, 2 = stop
 }
+
+message AVInputOpenRequest
+{
+    required bool open = 1;
+    optional bool anc = 2;
+    optional bool ec = 3;
+    optional int32 max_unacked = 4;
+}
+
+message AVInputOpenResponse
+{
+    required int32 session = 1;
+    required uint32 value = 2;
+}

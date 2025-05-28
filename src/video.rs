@@ -117,6 +117,7 @@ impl ChannelHandlerTrait for VideoChannelHandler {
         let msg2: Result<AvChannelMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
             match msg2 {
+                AvChannelMessage::AvChannelOpen(_chan, _m) => todo!(),
                 AvChannelMessage::MediaIndicationAck(_, _) => unimplemented!(),
                 AvChannelMessage::MediaIndication(_chan, time, data) => {
                     if let Some(a) = main.supports_video() {
