@@ -134,16 +134,16 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                 SensorMessage::SensorStartResponse(_, _) => unimplemented!(),
                 SensorMessage::SensorStartRequest(_chan, m) => {
                     let mut m2 = Wifi::SensorStartResponseMessage::new();
-                    
+
                     if let Some(sns) = main.supports_sensors() {
                         let stat = match sns.start_sensor(m.sensor_type()).await {
                             Ok(_) => Wifi::status::Enum::OK,
                             Err(_) => Wifi::status::Enum::FAIL,
                         };
                         m2.set_status(stat);
-                            stream
-                        .write_frame(SensorMessage::SensorStartResponse(channel, m2).into())
-                        .await?;
+                        stream
+                            .write_frame(SensorMessage::SensorStartResponse(channel, m2).into())
+                            .await?;
                     }
                 }
             }

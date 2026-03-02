@@ -24,6 +24,9 @@ webpki-roots = "0.26.9"
 [build-dependencies]
 protobuf-codegen = "3.7.2"
 
+[dev-dependencies]
+eframe = "0.33.3"
+
 [features]
 default = ["wireless"]
 wireless = ["dep:bluetooth-rust", "dep:tokio"]

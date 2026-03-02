@@ -172,7 +172,6 @@ pub trait AndroidAutoMainTrait: Send + Sync {
     fn supports_bluetooth(&self) -> Option<&dyn AndroidAutoBluetoothTrait> {
         None
     }
-    
 
     /// Implement this to support wireless android auto communications
     #[inline(always)]
@@ -1428,7 +1427,10 @@ async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
 ) -> Result<(), String> {
     let network = wireless.get_wifi_details();
 
-    log::info!("Starting android auto wireless service on port {}", network.port);
+    log::info!(
+        "Starting android auto wireless service on port {}",
+        network.port
+    );
     if let Ok(a) = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", network.port)).await {
         loop {
             if let Ok((stream, addr)) = a.accept().await {

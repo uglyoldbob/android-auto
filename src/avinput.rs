@@ -3,7 +3,9 @@
 use protobuf::Message;
 
 use crate::{
-    common::AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, AvChannelMessage, ChannelHandlerTrait, ChannelId, FrameIoError, StreamMux, Wifi
+    AndroidAutoConfiguration, AndroidAutoFrame, AndroidAutoMainTrait, AvChannelMessage,
+    ChannelHandlerTrait, ChannelId, FrameIoError, StreamMux, Wifi,
+    common::AndroidAutoCommonMessage,
 };
 
 /// Handles the av input channel of the android auto protocol
@@ -67,10 +69,13 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
                 AvChannelMessage::AvChannelOpen(_chan, m) => {
                     if let Some(a) = main.supports_audio_input() {
                         if m.open() {
-                            a.open_channel().await.map_err(|_| FrameIoError::AudioInputOpenError)?;
-                        }
-                        else {
-                            a.close_channel().await.map_err(|_| FrameIoError::AudioInputCloseError)?;
+                            a.open_channel()
+                                .await
+                                .map_err(|_| FrameIoError::AudioInputOpenError)?;
+                        } else {
+                            a.close_channel()
+                                .await
+                                .map_err(|_| FrameIoError::AudioInputCloseError)?;
                         }
                     }
                 }

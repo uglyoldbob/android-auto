@@ -94,7 +94,7 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
             if !chan.is_initialized() {
                 panic!("Channel not initialized?");
             }
-            chan    
+            chan
         })
     }
 
