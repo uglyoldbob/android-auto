@@ -294,6 +294,8 @@ impl AndroidAuto {
 struct MyEguiApp {
     recv: tokio::sync::mpsc::Receiver<MessageFromAsync>,
     send: tokio::sync::mpsc::Sender<MessageToAsync>,
+    android_auto_video_decoder: openh264::decoder::Decoder,
+    android_auto_texture: Option<egui::TextureHandle>,
 }
 
 impl MyEguiApp {
@@ -302,7 +304,12 @@ impl MyEguiApp {
         recv: tokio::sync::mpsc::Receiver<MessageFromAsync>,
         send: tokio::sync::mpsc::Sender<MessageToAsync>,
     ) -> Self {
-        Self { recv, send }
+        Self {
+            recv,
+            send,
+            android_auto_video_decoder: openh264::decoder::Decoder::new().unwrap(),
+            android_auto_texture: None,
+        }
     }
 }
 
@@ -313,11 +320,110 @@ impl eframe::App for MyEguiApp {
             match v {
                 MessageFromAsync::VideoData { data, timestamp: _ } => {
                     log::info!("Received video data len {}", data.len());
+                    let mut units = openh264::nal_units(&data).peekable();
+                    while let Some(p) = units.next() {
+                        match self.android_auto_video_decoder.decode(p) {
+                            Err(e) => {
+                                log::error!("Failed to decode android auto video {:?}", e);
+                            }
+                            Ok(Some(image)) => {
+                                if units.peek().is_none() {
+                                    use openh264::formats::YUVSource;
+                                    let rgb_len = image.rgb8_len();
+                                    let mut rgb_raw = vec![0; rgb_len];
+                                    image.write_rgb8(&mut rgb_raw);
+                                    let (w, h) = image.dimensions_uv();
+                                    let pixels: Vec<egui::Color32> = rgb_raw
+                                        .chunks_exact(3)
+                                        .map(|i| egui::Color32::from_rgb(i[0], i[1], i[2]))
+                                        .collect();
+                                    let image = egui::ColorImage {
+                                        source_size: egui::Vec2 {
+                                            x: w as f32 * 2.0,
+                                            y: h as f32 * 2.0,
+                                        },
+                                        size: [w * 2usize, h * 2usize],
+                                        pixels,
+                                    };
+                                    if self.android_auto_texture.is_none() {
+                                        self.android_auto_texture = Some(ctx.load_texture(
+                                            "android_auto",
+                                            image,
+                                            egui::TextureOptions::LINEAR,
+                                        ));
+                                    } else if let Some(t) = &mut self.android_auto_texture {
+                                        t.set_partial([0, 0], image, egui::TextureOptions::LINEAR);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    log::info!("Done parsing video data");
                 }
             }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("I am groot");
+            let size = ui.available_size();
+            if let Some(t) = &self.android_auto_texture {
+                ui.label("Got some video data to show you");
+                let isize = t.size()[1];
+                let zoom = isize as f32 / size.y;
+                let dsize = t.size_vec2() / zoom;
+                let p = ui.cursor();
+                let r = ui.add(
+                    egui::Image::from_texture(egui::load::SizedTexture {
+                        id: t.id(),
+                        size: dsize,
+                    })
+                    .sense(egui::Sense::drag()),
+                );
+                let o = if let Some(mut o) = r.interact_pointer_pos() {
+                    o.x -= p.left();
+                    o.y -= p.top();
+                    o.x *= zoom;
+                    o.y *= zoom;
+                    Some(o)
+                } else if let Some(mut o) = r.hover_pos() {
+                    o.x -= p.left();
+                    o.y -= p.top();
+                    o.x *= zoom;
+                    o.y *= zoom;
+                    Some(o)
+                } else {
+                    None
+                };
+                if let Some(o) = o {
+                    let mut i_event = android_auto::Wifi::InputEventIndication::new();
+                    let timestamp: u64 = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_micros() as u64;
+                    i_event.set_timestamp(timestamp);
+                    let mut te = android_auto::Wifi::TouchEvent::new();
+                    let mut tl = android_auto::Wifi::TouchLocation::new();
+                    tl.set_x(o.x as u32);
+                    tl.set_y(o.y as u32);
+                    tl.set_pointer_id(0);
+                    te.touch_location = vec![tl];
+                    let mut do_touch = true;
+                    if r.drag_started() {
+                        te.set_touch_action(android_auto::Wifi::touch_action::Enum::PRESS);
+                    } else if r.drag_stopped() {
+                        te.set_touch_action(android_auto::Wifi::touch_action::Enum::RELEASE);
+                    } else if r.dragged() {
+                        te.set_touch_action(android_auto::Wifi::touch_action::Enum::DRAG);
+                    } else if r.hovered() {
+                        te.set_touch_action(android_auto::Wifi::touch_action::Enum::DRAG);
+                    } else {
+                        do_touch = false;
+                    }
+                    if do_touch {
+                        i_event.touch_event = android_auto::protobuf::MessageField::some(te);
+                        let e = android_auto::AndroidAutoMessage::Input(i_event);
+                    }
+                }
+            }
         });
     }
 }
