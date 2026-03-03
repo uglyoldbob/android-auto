@@ -1,6 +1,7 @@
 //! The main example for this library
-use std::sync::Arc;
+use bluetooth_rust::{BluetoothAdapterTrait, MessageToBluetoothHost};
 use rustls::crypto::aws_lc_rs::sign::any_ecdsa_type;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use android_auto::{HeadUnitInfo, VideoConfiguration};
@@ -10,6 +11,7 @@ struct AndroidAutoInner {
     connected: bool,
     recv: tokio::sync::mpsc::Receiver<MessageToAsync>,
     send: tokio::sync::mpsc::Sender<MessageFromAsync>,
+    blue_recv: tokio::sync::mpsc::Receiver<MessageToBluetoothHost>,
 }
 
 struct AndroidAuto {
@@ -33,7 +35,9 @@ enum MessageToAsync {
 impl android_auto::AndroidAutoVideoChannelTrait for AndroidAuto {
     async fn receive_video(&self, data: Vec<u8>, timestamp: Option<u64>) {
         let mut i = self.inner.lock().await;
-        i.send.send(MessageFromAsync::VideoData { data, timestamp }).await;
+        i.send
+            .send(MessageFromAsync::VideoData { data, timestamp })
+            .await;
     }
 
     async fn setup_video(&self) -> Result<(), ()> {
@@ -53,9 +57,7 @@ impl android_auto::AndroidAutoVideoChannelTrait for AndroidAuto {
 
 #[async_trait::async_trait]
 impl android_auto::AndroidAutoBluetoothTrait for AndroidAuto {
-    async fn do_stuff(&self) {
-
-    }
+    async fn do_stuff(&self) {}
 
     fn get_config(&self) -> &android_auto::BluetoothInformation {
         &self.blue
@@ -90,16 +92,21 @@ impl android_auto::AndroidAutoMainTrait for AndroidAuto {
 }
 
 impl AndroidAuto {
-    fn new(recv: tokio::sync::mpsc::Receiver<MessageToAsync>,
-        send: tokio::sync::mpsc::Sender<MessageFromAsync>,) -> Self {
+    fn new(
+        recv: tokio::sync::mpsc::Receiver<MessageToAsync>,
+        send: tokio::sync::mpsc::Sender<MessageFromAsync>,
+        blue_recv: tokio::sync::mpsc::Receiver<MessageToBluetoothHost>,
+        blue_address: String,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(AndroidAutoInner {
                 connected: false,
                 send,
                 recv,
+                blue_recv,
             })),
             blue: android_auto::BluetoothInformation {
-                address: "00:11:22:33:44:55".to_string(),
+                address: blue_address,
             },
             config: VideoConfiguration {
                 resolution: android_auto::Wifi::video_resolution::Enum::_720p,
@@ -127,12 +134,12 @@ struct MyEguiApp {
 }
 
 impl MyEguiApp {
-    fn new(_cc: &eframe::CreationContext<'_>, recv: tokio::sync::mpsc::Receiver<MessageFromAsync>,
-        send: tokio::sync::mpsc::Sender<MessageToAsync>,) -> Self {
-        Self {
-            recv,
-            send,
-        }
+    fn new(
+        _cc: &eframe::CreationContext<'_>,
+        recv: tokio::sync::mpsc::Receiver<MessageFromAsync>,
+        send: tokio::sync::mpsc::Sender<MessageToAsync>,
+    ) -> Self {
+        Self { recv, send }
     }
 }
 
@@ -171,7 +178,28 @@ fn main() -> Result<(), u32> {
                 std::thread::current().name()
             );
 
-            let aa = AndroidAuto::new(to_async.1, from_async.0);
+            let (bluechan, bluetooth) = {
+                let bluechan = tokio::sync::mpsc::channel(5);
+                let mut bluetooth = bluetooth_rust::BluetoothAdapterBuilder::new();
+                bluetooth.with_sender(bluechan.0);
+                let bluetooth =
+                    Arc::new(bluetooth.build().await.expect("Could not open bluetooth"));
+                (bluechan.1, bluetooth)
+            };
+
+            let blue_addresses: Vec<[u8; 6]> = bluetooth.addresses().await;
+            let bluetooth_address = blue_addresses
+                .first()
+                .map(|b| {
+                    let a = format!(
+                        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                        b[0], b[1], b[2], b[3], b[4], b[5]
+                    );
+                    a
+                })
+                .expect("No bluetooth hardware found");
+
+            let aa = AndroidAuto::new(to_async.1, from_async.0, bluechan, bluetooth_address);
             let config = android_auto::AndroidAutoConfiguration {
                 unit: HeadUnitInfo {
                     name: "Example".to_string(),
@@ -188,8 +216,7 @@ fn main() -> Result<(), u32> {
                 },
                 custom_certificate: None,
             };
-            aa.start_android_auto(config)
-                .await?;
+            aa.start_android_auto(config).await?;
             Ok::<(), String>(())
         })
     });
