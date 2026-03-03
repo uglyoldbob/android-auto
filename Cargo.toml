@@ -26,7 +26,14 @@ protobuf-codegen = "3.7.2"
 
 [dev-dependencies]
 eframe = "0.33.3"
+nmrs = "2.0.1"
+simple_logger = "5.2.0"
+zbus = "5.13.2"
+zvariant = "5.9.2"
 
 [features]
 default = ["wireless"]
 wireless = ["dep:bluetooth-rust", "dep:tokio"]
+
+[patch.crates-io]
+rustls-webpki = { git = "https://github.com/uglyoldbob/webpki", branch = "main5" }
