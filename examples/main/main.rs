@@ -234,6 +234,10 @@ impl android_auto::AndroidAutoMainTrait for AndroidAuto {
     fn supports_audio_input(&self) -> Option<&dyn android_auto::AndroidAutoAudioInputTrait> {
         Some(self)
     }
+
+    fn supports_input(&self) -> Option<&dyn android_auto::AndroidAutoInputChannelTrait> {
+        Some(self)
+    }
 }
 
 impl AndroidAuto {
