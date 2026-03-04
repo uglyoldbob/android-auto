@@ -178,6 +178,7 @@ dependencies = [
  "nmrs",
  "nusb",
  "openh264",
+ "pin-project",
  "protobuf",
  "protobuf-codegen",
  "rustls",

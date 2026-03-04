@@ -1638,13 +1638,33 @@ impl AndroidAutoServer {
                         if usb::is_android_device(&dev) {
                             log::info!("USB DEVICE {:#?}", dev);
                             log::info!("ANDROID DEVICE");
-                            if let Ok(d) = dev.open().await {
-                                let aoa = usb::get_aoa_protocol(&d).await;
-                                log::info!("AOA is {:?}", aoa);
-                                usb::identify_accessory(&d).await;
-                                usb::accessory_start(&d).await;
-                                let aoa = usb::claim_aoa_interface(&d).await;
-                                log::info!("got aoa interface?");
+                            let mut go = false;
+                            match dev.open().await {
+                                Ok(d) => {
+                                    let aoa = usb::get_aoa_protocol(&d).await;
+                                    log::info!("AOA is {:?}", aoa);
+                                    usb::identify_accessory(&d).await;
+                                    usb::accessory_start(&d).await;
+                                    go = true;
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to open android device {e}");
+                                }
+                            }
+                            if go {
+                                match usb::wait_for_accessory().await {
+                                    Ok(newdev) => {
+                                        log::info!("AOA DEV IS {:?}", newdev);
+                                        let aoa = usb::claim_aoa_interface(&newdev).await;
+                                        let aauto = usb::AndroidAutoUsb::new(aoa);
+                                        if let Some(aauto) = aauto {
+                                            log::info!("got aoa interface?");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to get accessory {e}");
+                                    }
+                                }
                             }
                         }
                     }

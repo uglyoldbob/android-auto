@@ -7,8 +7,10 @@ use tokio::sync::Mutex;
 use android_auto::{HeadUnitInfo, VideoConfiguration};
 use eframe::egui;
 
+#[cfg(feature = "wireless")]
 mod nmrs_extensions;
 
+#[cfg(feature = "wireless")]
 /// Returns the first wifi interface found on the system
 async fn get_wifi_interface(nmrs: &nmrs::NetworkManager) -> Option<nmrs::Device> {
     if let Ok(devs) = nmrs.list_wireless_devices().await {
@@ -288,7 +290,7 @@ impl AndroidAuto {
                 address: blue_address,
             },
             config: VideoConfiguration {
-                resolution: android_auto::Wifi::video_resolution::Enum::_720p,
+                resolution: android_auto::Wifi::video_resolution::Enum::_480p,
                 fps: android_auto::Wifi::video_fps::Enum::_30,
                 dpi: 111,
             },
@@ -424,9 +426,9 @@ impl eframe::App for MyEguiApp {
                     te.touch_location = vec![tl];
                     let mut do_touch = true;
                     if r.drag_started() {
-                        te.set_touch_action(android_auto::Wifi::touch_action::Enum::PRESS);
+                        te.set_touch_action(android_auto::Wifi::touch_action::Enum::POINTER_DOWN);
                     } else if r.drag_stopped() {
-                        te.set_touch_action(android_auto::Wifi::touch_action::Enum::RELEASE);
+                        te.set_touch_action(android_auto::Wifi::touch_action::Enum::POINTER_UP);
                     } else if r.dragged() {
                         te.set_touch_action(android_auto::Wifi::touch_action::Enum::DRAG);
                     } else if r.hovered() {
@@ -472,13 +474,18 @@ fn main() -> Result<(), u32> {
                 std::thread::current().name()
             );
 
+            #[cfg(feature = "wireless")]
             let wifi = nmrs::NetworkManager::new().await.expect("Wifi not found");
+            #[cfg(feature = "wireless")]
             let wifi_dev = get_wifi_interface(&wifi)
                 .await
                 .expect("No wifi device found");
 
+            #[cfg(feature = "wireless")]
             let hotspot_ssid = "Hotspot".to_string();
+            #[cfg(feature = "wireless")]
             let hotspot_psk = "qwertyuiop".to_string();
+            #[cfg(feature = "wireless")]
             nmrs_extensions::start_hotspot(
                 hotspot_ssid.clone(),
                 hotspot_psk.clone(),
