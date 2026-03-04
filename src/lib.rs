@@ -13,6 +13,7 @@ mod cert;
 
 use ::protobuf::Message;
 use Wifi::ChannelDescriptor;
+#[cfg(feature = "wireless")]
 use bluetooth_rust::{
     BluetoothRfcommConnectableTrait, BluetoothRfcommProfileTrait, BluetoothStream,
 };
@@ -176,6 +177,7 @@ pub trait AndroidAutoMainTrait: Send + Sync {
         None
     }
 
+    #[cfg(feature = "wireless")]
     /// Implement this to support wireless android auto communications
     #[inline(always)]
     fn supports_wireless(&self) -> Option<Arc<dyn AndroidAutoWirelessTrait>> {
@@ -230,6 +232,7 @@ pub trait AndroidAutoMainTrait: Send + Sync {
 pub trait AndroidAutoWiredTrait: AndroidAutoMainTrait {}
 
 /// this trait is implemented by users that support bluetooth and wifi (both are required for wireless android auto)
+#[cfg(feature = "wireless")]
 #[async_trait::async_trait]
 pub trait AndroidAutoWirelessTrait: AndroidAutoMainTrait {
     /// The function to setup the android auto profile
@@ -889,6 +892,7 @@ impl AndroidAutoFrameReceiver {
     }
 }
 
+#[cfg(feature = "wireless")]
 /// A message sent or received over the android auto bluetooth connection. Used for setting up wireless android auto.
 enum AndroidAutoBluetoothMessage {
     /// A request for socket information
@@ -897,6 +901,7 @@ enum AndroidAutoBluetoothMessage {
     NetworkInfoMessage(Bluetooth::NetworkInfo),
 }
 
+#[cfg(feature = "wireless")]
 impl AndroidAutoBluetoothMessage {
     /// Build an `AndroidAutoMessage` from self
     fn as_message(&self) -> AndroidAutoRawBluetoothMessage {
@@ -914,6 +919,7 @@ impl AndroidAutoBluetoothMessage {
     }
 }
 
+#[cfg(feature = "wireless")]
 impl From<AndroidAutoRawBluetoothMessage> for Vec<u8> {
     fn from(value: AndroidAutoRawBluetoothMessage) -> Self {
         let mut buf = Vec::new();
@@ -1350,6 +1356,7 @@ impl<T> Drop for DroppingJoinHandle<T> {
     }
 }
 
+#[cfg(feature = "wireless")]
 /// The handler function for a single bluetooth connection
 async fn handle_bluetooth_client(
     stream: &mut BluetoothStream,
@@ -1416,6 +1423,7 @@ async fn handle_bluetooth_client(
     Ok(())
 }
 
+#[cfg(feature = "wireless")]
 /// Runs the bluetooth service that allows wireless android auto connections to start up
 async fn bluetooth_service(
     mut profile: bluetooth_rust::BluetoothRfcommProfile,
@@ -1433,6 +1441,7 @@ async fn bluetooth_service(
     Ok(())
 }
 
+#[cfg(feature = "wireless")]
 /// Runs the wifi service for android auto
 async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
     config: AndroidAutoConfiguration,
@@ -1642,6 +1651,7 @@ impl AndroidAutoServer {
                 }
             }
         }
+        #[cfg(feature = "wireless")]
         if let Some(wireless) = main.supports_wireless() {
             let psettings = bluetooth_rust::BluetoothRfcommProfileSettings {
                 uuid: bluetooth_rust::BluetoothUuid::AndroidAuto
@@ -1676,10 +1686,8 @@ impl AndroidAutoServer {
                 log::error!("Android auto wireless service stopped: {:?}", e);
                 e
             });
-            Ok(())
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     /// Construct a new self

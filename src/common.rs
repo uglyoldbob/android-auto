@@ -13,7 +13,6 @@ pub enum AndroidAutoCommonMessage {
     ChannelOpenResponse(ChannelId, Wifi::ChannelOpenResponse),
 }
 
-#[cfg(feature = "wireless")]
 impl TryFrom<&AndroidAutoFrame> for AndroidAutoCommonMessage {
     type Error = String;
     fn try_from(value: &AndroidAutoFrame) -> Result<Self, Self::Error> {
@@ -45,7 +44,6 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoCommonMessage {
     }
 }
 
-#[cfg(feature = "wireless")]
 impl From<AndroidAutoCommonMessage> for AndroidAutoFrame {
     fn from(value: AndroidAutoCommonMessage) -> Self {
         match value {

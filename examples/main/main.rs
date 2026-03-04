@@ -1,4 +1,5 @@
 //! The main example for this library. Use release mode to run it. openh264 is too slow for debug mode.
+#[cfg(feature = "wireless")]
 use bluetooth_rust::{BluetoothAdapterTrait, MessageToBluetoothHost};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
@@ -28,6 +29,7 @@ struct AndroidAutoInner {
     android_send: tokio::sync::mpsc::Sender<android_auto::SendableAndroidAutoMessage>,
 }
 
+#[cfg(feature = "wireless")]
 #[async_trait::async_trait]
 impl android_auto::AndroidAutoWirelessTrait for AndroidAuto {
     async fn setup_bluetooth_profile(
@@ -49,8 +51,11 @@ impl android_auto::AndroidAutoWirelessTrait for AndroidAuto {
 struct AndroidAuto {
     inner: Arc<Mutex<AndroidAutoInner>>,
     config: VideoConfiguration,
+    #[cfg(feature = "wireless")]
     blue: android_auto::BluetoothInformation,
+    #[cfg(feature = "wireless")]
     bluetooth: Arc<bluetooth_rust::BluetoothAdapter>,
+    #[cfg(feature = "wireless")]
     /// The network information
     network: Arc<android_auto::NetworkInformation>,
     /// The sensors config
@@ -95,6 +100,7 @@ impl android_auto::AndroidAutoVideoChannelTrait for AndroidAuto {
     }
 }
 
+#[cfg(feature = "wireless")]
 #[async_trait::async_trait]
 impl android_auto::AndroidAutoBluetoothTrait for AndroidAuto {
     async fn do_stuff(&self) {}
@@ -214,10 +220,12 @@ impl android_auto::AndroidAutoMainTrait for AndroidAuto {
         Some(self)
     }
 
+    #[cfg(feature = "wireless")]
     fn supports_bluetooth(&self) -> Option<&dyn android_auto::AndroidAutoBluetoothTrait> {
         Some(self)
     }
 
+    #[cfg(feature = "wireless")]
     fn supports_wireless(&self) -> Option<Arc<dyn android_auto::AndroidAutoWirelessTrait>> {
         Some(Arc::new(self.clone()))
     }
@@ -243,9 +251,9 @@ impl AndroidAuto {
     fn new(
         mut recv: tokio::sync::mpsc::Receiver<MessageToAsync>,
         send: tokio::sync::mpsc::Sender<MessageFromAsync>,
-        bluetooth: Arc<bluetooth_rust::BluetoothAdapter>,
-        blue_address: String,
-        network: android_auto::NetworkInformation,
+        #[cfg(feature = "wireless")] bluetooth: Arc<bluetooth_rust::BluetoothAdapter>,
+        #[cfg(feature = "wireless")] blue_address: String,
+        #[cfg(feature = "wireless")] network: android_auto::NetworkInformation,
         android_recv: tokio::sync::mpsc::Receiver<android_auto::SendableAndroidAutoMessage>,
         android_send: tokio::sync::mpsc::Sender<android_auto::SendableAndroidAutoMessage>,
     ) -> Self {
@@ -271,8 +279,11 @@ impl AndroidAuto {
                 arecv: Some(android_recv),
                 android_send,
             })),
+            #[cfg(feature = "wireless")]
             bluetooth,
+            #[cfg(feature = "wireless")]
             network: Arc::new(network),
+            #[cfg(feature = "wireless")]
             blue: android_auto::BluetoothInformation {
                 address: blue_address,
             },
@@ -476,6 +487,7 @@ fn main() -> Result<(), u32> {
             .await
             .expect("Failed to build wifi hotspot");
 
+            #[cfg(feature = "wireless")]
             let (mut bluechan, bluetooth) = {
                 let bluechan = tokio::sync::mpsc::channel(5);
                 let mut bluetooth = bluetooth_rust::BluetoothAdapterBuilder::new();
@@ -484,11 +496,13 @@ fn main() -> Result<(), u32> {
                     Arc::new(bluetooth.build().await.expect("Could not open bluetooth"));
                 (bluechan.1, bluetooth)
             };
+            #[cfg(feature = "wireless")]
             bluetooth
                 .set_discoverable(true)
                 .await
                 .expect("Failed to make bluetooth discoverable");
 
+            #[cfg(feature = "wireless")]
             tokio::spawn(async move {
                 loop {
                     if let Some(m) = bluechan.recv().await {
@@ -509,7 +523,9 @@ fn main() -> Result<(), u32> {
                 }
             });
 
+            #[cfg(feature = "wireless")]
             let blue_addresses: Vec<[u8; 6]> = bluetooth.addresses().await;
+            #[cfg(feature = "wireless")]
             let bluetooth_address = blue_addresses
                 .first()
                 .map(|b| {
@@ -526,8 +542,11 @@ fn main() -> Result<(), u32> {
             let aa = AndroidAuto::new(
                 to_async.1,
                 from_async.0,
+                #[cfg(feature = "wireless")]
                 bluetooth,
+                #[cfg(feature = "wireless")]
                 bluetooth_address,
+                #[cfg(feature = "wireless")]
                 android_auto::NetworkInformation {
                     ssid: hotspot_ssid,
                     psk: hotspot_psk,

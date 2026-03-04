@@ -8,7 +8,6 @@ use crate::{
 use protobuf::{Enum, Message};
 
 /// A control message on the android auto protocol
-#[cfg(feature = "wireless")]
 #[derive(Debug)]
 pub enum AndroidAutoControlMessage {
     /// A message requesting version information.
@@ -50,7 +49,6 @@ pub enum AndroidAutoControlMessage {
     VoiceSession(Wifi::VoiceSessionRequest),
 }
 
-#[cfg(feature = "wireless")]
 impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
     type Error = String;
     fn try_from(value: &AndroidAutoFrame) -> Result<Self, Self::Error> {
@@ -147,7 +145,6 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
     }
 }
 
-#[cfg(feature = "wireless")]
 impl From<AndroidAutoControlMessage> for AndroidAutoFrame {
     fn from(value: AndroidAutoControlMessage) -> Self {
         match value {
