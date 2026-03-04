@@ -65,7 +65,7 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         }
         let msg2: Result<AvChannelMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
-            log::info!("Received: {:?}", msg2);
+            log::info!("Received: {channel} {:?}", msg2);
             match msg2 {
                 AvChannelMessage::AvChannelOpen(_chan, m) => {
                     if m.open() {
@@ -78,7 +78,9 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
                             .map_err(|_| FrameIoError::AudioInputCloseError)?;
                     }
                 }
-                AvChannelMessage::MediaIndicationAck(_, _) => {}
+                AvChannelMessage::MediaIndicationAck(chan, ack) => {
+                    main.audio_input_ack(chan, ack).await;
+                }
                 AvChannelMessage::MediaIndication(_chan, _timestamp, _data) => unimplemented!(),
                 AvChannelMessage::SetupRequest(_chan, _m) => {
                     let mut m2 = Wifi::AVChannelSetupResponse::new();

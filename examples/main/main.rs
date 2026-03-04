@@ -34,13 +34,11 @@ struct AndroidAutoInner {
     send: tokio::sync::mpsc::Sender<MessageFromAsync>,
     arecv: Option<tokio::sync::mpsc::Receiver<android_auto::SendableAndroidAutoMessage>>,
     android_send: tokio::sync::mpsc::Sender<android_auto::SendableAndroidAutoMessage>,
-    audio_output: Option<cpal::Device>,
     audio_input: Option<cpal::Device>,
-    cpal_host: cpal::Host,
     media_stream: Option<(AudioProducer, cpal::Stream)>,
     sys_stream: Option<(AudioProducer, cpal::Stream)>,
     speech_stream: Option<(AudioProducer, cpal::Stream)>,
-    input_stream: Option<(AudioConsumer, cpal::Stream)>,
+    input_stream: Option<cpal::Stream>,
 }
 
 #[cfg(feature = "wireless")]
@@ -206,6 +204,7 @@ impl android_auto::AndroidAutoAudioOutputTrait for AndroidAuto {
 
     async fn stop_output_audio(&self, t: android_auto::AudioChannelType) {
         let s = self.inner.lock().await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         match t {
             android_auto::AudioChannelType::Media => {
                 s.media_stream.as_ref().map(|m| m.1.pause());
@@ -234,43 +233,54 @@ impl android_auto::AndroidAutoInputChannelTrait for AndroidAuto {
 #[async_trait::async_trait]
 impl android_auto::AndroidAutoAudioInputTrait for AndroidAuto {
     async fn open_input_channel(&self) -> Result<(), ()> {
+        log::error!("Start audio input channel");
+        let mut s = self.inner.lock().await;
+        let config = cpal::StreamConfig {
+            channels: 1,
+            sample_rate: 16000,
+            buffer_size: cpal::BufferSize::Default,
+        };
+        if let Some(ai) = &s.audio_input {
+            let android_send = s.android_send.clone();
+            if let Ok(str) = ai.build_input_stream(
+                &config,
+                move |data: &[i16], _| {
+                    let bytes: Vec<u8> = data.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_micros() as u64;
+                    let msg = android_auto::AndroidAutoMessage::Audio(Some(timestamp), bytes);
+                    if let Err(e) = android_send.try_send(msg.sendable()) {
+                        log::warn!("Dropped audio input frame: {:?}", e);
+                    }
+                },
+                |err| log::error!("Audio input error: {:?}", err),
+                None,
+            ) {
+                let _ = str.play();
+                s.input_stream = Some(str);
+            } else {
+                log::error!("Failed to open input channel stream");
+            }
+        }
         Ok(())
     }
     async fn close_input_channel(&self) -> Result<(), ()> {
+        let mut s = self.inner.lock().await;
+        s.input_stream.take();
         Ok(())
     }
-    async fn start_input_audio(&self) {
-        let mut s = self.inner.lock().await;
-        log::error!("Start audio input channel");
-        if let Some(ai) = &mut s.input_stream {
-            let _ = ai.1.play();
-        }
-    }
-    async fn stop_input_audio(&self) {
-        let mut s = self.inner.lock().await;
-        log::error!("Stop audio input channel");
-        if let Some(ai) = &mut s.input_stream {
-            let _ = ai.1.pause();
-        }
+    async fn start_input_audio(&self) {}
+
+    async fn audio_input_ack(&self, chan: u8, ack: android_auto::Wifi::AVMediaAckIndication) {
+        log::info!("Ack audio input for chan {chan} {ack:?}");
     }
 
-    async fn get_input_audio(&self) {
+    async fn stop_input_audio(&self) {
+        log::error!("Stop audio input channel");
         let mut s = self.inner.lock().await;
-        if let Some(ai) = &mut s.input_stream {
-            if !ai.0.is_empty() {
-                let len = ai.0.occupied_len();
-                let mut v = vec![0; len];
-                let olen = ai.0.pop_slice(&mut v);
-                let data = v[0..olen].to_vec();
-                let timestamp: u64 = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_micros() as u64;
-                let data2 = data.iter().map(|e| e.to_le_bytes()).flatten().collect();
-                let p = android_auto::AndroidAutoMessage::Audio(Some(timestamp), data2);
-                let _ = s.android_send.send(p.sendable()).await;
-            }
-        }
+        s.input_stream.take();
     }
 }
 
@@ -338,47 +348,13 @@ impl AndroidAuto {
                 }
             }
         });
-        let (ao, ai, h, media_stream, sys_stream, speech_stream, input_stream) = {
+        let (ao, ai, h, media_stream, sys_stream, speech_stream) = {
             let h = cpal::default_host();
             let mut ao = h.default_output_device();
-            let mut ai = h.default_input_device();
+            let ai = h.default_input_device();
             let mut media_stream = None;
             let mut sys_stream = None;
             let mut speech_stream = None;
-            let mut input_stream = None;
-            if let Some(ai) = &mut ai {
-                if let Ok(c) = ai.supported_input_configs() {
-                    let mut in_config = None;
-                    for c in c {
-                        const IN_RATE: u32 = 16000;
-                        const IN_CHANNELS: u16 = 1;
-                        if c.min_sample_rate() <= IN_RATE && c.max_sample_rate() >= IN_RATE {
-                            if c.channels() == IN_CHANNELS {
-                                if c.sample_format() == cpal::SampleFormat::I16 {
-                                    in_config = c.try_with_sample_rate(IN_RATE);
-                                }
-                            }
-                        }
-                    }
-                    if let Some(mc) = in_config {
-                        let rb = ringbuf::HeapRb::new(16000);
-                        let (mut producer, consumer) = ringbuf::traits::Split::split(rb);
-                        let s = ai.build_input_stream(
-                            &mc.config(),
-                            move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                                producer.push_slice(data);
-                            },
-                            move |err| {
-                                log::error!("Error in media audio output: {:?}", err);
-                            },
-                            None,
-                        );
-                        if let Ok(s) = s {
-                            input_stream = Some((consumer, s));
-                        }
-                    }
-                }
-            }
             if let Some(ao) = &mut ao {
                 if let Ok(c) = ao.supported_output_configs() {
                     {
@@ -504,15 +480,7 @@ impl AndroidAuto {
                     }
                 }
             }
-            (
-                ao,
-                ai,
-                h,
-                media_stream,
-                sys_stream,
-                speech_stream,
-                input_stream,
-            )
+            (ao, ai, h, media_stream, sys_stream, speech_stream)
         };
         Self {
             inner: Arc::new(Mutex::new(AndroidAutoInner {
@@ -520,13 +488,11 @@ impl AndroidAuto {
                 send,
                 arecv: Some(android_recv),
                 android_send,
-                cpal_host: h,
-                audio_output: ao,
                 audio_input: ai,
                 media_stream,
                 sys_stream,
                 speech_stream,
-                input_stream,
+                input_stream: None,
             })),
             #[cfg(feature = "wireless")]
             bluetooth,

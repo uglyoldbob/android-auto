@@ -298,10 +298,10 @@ pub trait AndroidAutoAudioInputTrait {
     async fn close_input_channel(&self) -> Result<(), ()>;
     /// The audio channel will start
     async fn start_input_audio(&self);
-    /// Poll the audio input channel
-    async fn get_input_audio(&self);
     /// The audio channel will stop
     async fn stop_input_audio(&self);
+    /// The ack for the audio data
+    async fn audio_input_ack(&self, chan: u8, ack: AVMediaAckIndication);
 }
 
 /// The configuration for an input channel
@@ -613,6 +613,8 @@ mod frame_header {
     }
 }
 use frame_header::FrameHeaderContents;
+
+use crate::protobufmod::Wifi::AVMediaAckIndication;
 
 /// Represents the header of a frame sent to the android auto client
 #[derive(Copy, Clone, Debug)]
@@ -1105,7 +1107,13 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
                     }
                 }
                 Wifi::avchannel_message::Enum::SETUP_RESPONSE => unimplemented!(),
-                Wifi::avchannel_message::Enum::AV_MEDIA_ACK_INDICATION => todo!(),
+                Wifi::avchannel_message::Enum::AV_MEDIA_ACK_INDICATION => {
+                    let m = Wifi::AVMediaAckIndication::parse_from_bytes(&value.data[2..]);
+                    match m {
+                        Ok(m) => Ok(Self::MediaIndicationAck(value.header.channel_id, m)),
+                        Err(e) => Err(format!("Invalid channel stop request: {}", e)),
+                    }
+                }
                 Wifi::avchannel_message::Enum::AV_INPUT_OPEN_REQUEST => {
                     let m = Wifi::AVInputOpenRequest::parse_from_bytes(&value.data[2..]);
                     match m {
