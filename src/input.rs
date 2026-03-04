@@ -95,29 +95,25 @@ impl ChannelHandlerTrait for InputChannelHandler {
         chanid: ChannelId,
         main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
-        if let Some(ic) = main.supports_input() {
-            let mut chan = Wifi::ChannelDescriptor::new();
-            chan.set_channel_id(chanid as u32);
-            let mut ichan = Wifi::InputChannel::new();
-            let ics = ic.retrieve_input_configuration();
-            if let Some((w, h)) = ics.touchscreen {
-                let mut tc = Wifi::TouchConfig::new();
-                tc.set_height(h as u32);
-                tc.set_width(w as u32);
-                ichan.touch_screen_config.0.replace(Box::new(tc));
-            }
-            for c in &ics.keycodes {
-                log::error!("Keycode {} added", c);
-                ichan.supported_keycodes.push(*c);
-            }
-            chan.input_channel.0.replace(Box::new(ichan));
-            if !chan.is_initialized() {
-                panic!("Channel not initialized?");
-            }
-            Some(chan)
-        } else {
-            None
+        let mut chan = Wifi::ChannelDescriptor::new();
+        chan.set_channel_id(chanid as u32);
+        let mut ichan = Wifi::InputChannel::new();
+        let ics = main.retrieve_input_configuration();
+        if let Some((w, h)) = ics.touchscreen {
+            let mut tc = Wifi::TouchConfig::new();
+            tc.set_height(h as u32);
+            tc.set_width(w as u32);
+            ichan.touch_screen_config.0.replace(Box::new(tc));
         }
+        for c in &ics.keycodes {
+            log::error!("Keycode {} added", c);
+            ichan.supported_keycodes.push(*c);
+        }
+        chan.input_channel.0.replace(Box::new(ichan));
+        if !chan.is_initialized() {
+            panic!("Channel not initialized?");
+        }
+        Some(chan)
     }
 
     async fn receive_data<
@@ -137,18 +133,16 @@ impl ChannelHandlerTrait for InputChannelHandler {
             match msg2 {
                 InputMessage::BindingRequest(chan, m) => {
                     let mut status = false;
-                    if let Some(i) = main.supports_input() {
-                        let ics = i.retrieve_input_configuration();
-                        status = true;
-                        for c in &m.scan_codes {
-                            if !ics.keycodes.contains(&(*c as u32)) {
-                                status = false;
-                                break;
-                            }
-                            if i.binding_request(*c as u32).await.is_err() {
-                                status = false;
-                                break;
-                            }
+                    let ics = main.retrieve_input_configuration();
+                    status = true;
+                    for c in &m.scan_codes {
+                        if !ics.keycodes.contains(&(*c as u32)) {
+                            status = false;
+                            break;
+                        }
+                        if main.binding_request(*c as u32).await.is_err() {
+                            status = false;
+                            break;
                         }
                     }
                     let mut m2 = Wifi::BindingResponse::new();

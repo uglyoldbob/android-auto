@@ -42,39 +42,35 @@ impl ChannelHandlerTrait for VideoChannelHandler {
         chanid: ChannelId,
         main: &T,
     ) -> Option<Wifi::ChannelDescriptor> {
-        if let Some(v) = main.supports_video() {
-            let mut chan = Wifi::ChannelDescriptor::new();
-            let mut avchan = Wifi::AVChannel::new();
-            chan.set_channel_id(chanid as u32);
-            avchan.set_stream_type(Wifi::avstream_type::Enum::VIDEO);
-            avchan.set_available_while_in_call(true);
-            avchan.set_audio_type(Wifi::audio_type::Enum::SYSTEM);
-            let mut vconfs = Vec::new();
-            vconfs.push({
-                let mut vc = Wifi::VideoConfig::new();
-                let vcs = v.retrieve_video_configuration();
-                vc.set_video_resolution(vcs.resolution);
-                vc.set_video_fps(vcs.fps);
-                vc.set_dpi(vcs.dpi as u32);
-                vc.set_margin_height(0);
-                vc.set_margin_width(0);
-                if !vc.is_initialized() {
-                    panic!();
-                }
-                vc
-            });
-            for v in vconfs {
-                avchan.video_configs.push(v);
+        let mut chan = Wifi::ChannelDescriptor::new();
+        let mut avchan = Wifi::AVChannel::new();
+        chan.set_channel_id(chanid as u32);
+        avchan.set_stream_type(Wifi::avstream_type::Enum::VIDEO);
+        avchan.set_available_while_in_call(true);
+        avchan.set_audio_type(Wifi::audio_type::Enum::SYSTEM);
+        let mut vconfs = Vec::new();
+        vconfs.push({
+            let mut vc = Wifi::VideoConfig::new();
+            let vcs = main.retrieve_video_configuration();
+            vc.set_video_resolution(vcs.resolution);
+            vc.set_video_fps(vcs.fps);
+            vc.set_dpi(vcs.dpi as u32);
+            vc.set_margin_height(0);
+            vc.set_margin_width(0);
+            if !vc.is_initialized() {
+                panic!();
             }
-
-            chan.av_channel.0.replace(Box::new(avchan));
-            if !chan.is_initialized() {
-                panic!("Channel not initialized?");
-            }
-            Some(chan)
-        } else {
-            None
+            vc
+        });
+        for v in vconfs {
+            avchan.video_configs.push(v);
         }
+
+        chan.av_channel.0.replace(Box::new(avchan));
+        if !chan.is_initialized() {
+            panic!("Channel not initialized?");
+        }
+        Some(chan)
     }
 
     async fn receive_data<
@@ -96,15 +92,11 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenRequest(m) => {
                     log::info!("Got channel open request for video: {:?}", m);
                     let mut m2 = Wifi::ChannelOpenResponse::new();
-                    if let Some(v) = main.supports_video() {
-                        m2.set_status(if v.setup_video().await.is_ok() {
-                            Wifi::status::Enum::OK
-                        } else {
-                            Wifi::status::Enum::FAIL
-                        });
+                    m2.set_status(if main.setup_video().await.is_ok() {
+                        Wifi::status::Enum::OK
                     } else {
-                        m2.set_status(Wifi::status::Enum::FAIL);
-                    }
+                        Wifi::status::Enum::FAIL
+                    });
                     stream
                         .write_frame(
                             AndroidAutoCommonMessage::ChannelOpenResponse(channel, m2).into(),
@@ -120,22 +112,20 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                 AvChannelMessage::AvChannelOpen(_chan, _m) => todo!(),
                 AvChannelMessage::MediaIndicationAck(_, _) => unimplemented!(),
                 AvChannelMessage::MediaIndication(_chan, time, data) => {
-                    if let Some(a) = main.supports_video() {
-                        a.receive_video(data, time).await;
-                        let mut m2 = Wifi::AVMediaAckIndication::new();
-                        {
-                            let inner = self.inner.lock().unwrap();
-                            m2.set_session(
-                                inner
-                                    .session
-                                    .ok_or(super::FrameSequenceError::VideoChannelNotOpen)?,
-                            );
-                        }
-                        m2.set_value(1);
-                        stream
-                            .write_frame(AvChannelMessage::MediaIndicationAck(channel, m2).into())
-                            .await?;
+                    main.receive_video(data, time).await;
+                    let mut m2 = Wifi::AVMediaAckIndication::new();
+                    {
+                        let inner = self.inner.lock().unwrap();
+                        m2.set_session(
+                            inner
+                                .session
+                                .ok_or(super::FrameSequenceError::VideoChannelNotOpen)?,
+                        );
                     }
+                    m2.set_value(1);
+                    stream
+                        .write_frame(AvChannelMessage::MediaIndicationAck(channel, m2).into())
+                        .await?;
                 }
                 AvChannelMessage::SetupRequest(_chan, _m) => {
                     let mut m2 = Wifi::AVChannelSetupResponse::new();
@@ -145,32 +135,24 @@ impl ChannelHandlerTrait for VideoChannelHandler {
                     stream
                         .write_frame(AvChannelMessage::SetupResponse(channel, m2).into())
                         .await?;
-                    if let Some(v) = main.supports_video() {
-                        v.wait_for_focus().await;
-                        let mut m2 = Wifi::VideoFocusIndication::new();
-                        m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
-                        m2.set_unrequested(false);
-                        stream
-                            .write_frame(
-                                AvChannelMessage::VideoIndicationResponse(channel, m2).into(),
-                            )
-                            .await?;
-                    }
+                    main.wait_for_focus().await;
+                    let mut m2 = Wifi::VideoFocusIndication::new();
+                    m2.set_focus_mode(Wifi::video_focus_mode::Enum::FOCUSED);
+                    m2.set_unrequested(false);
+                    stream
+                        .write_frame(AvChannelMessage::VideoIndicationResponse(channel, m2).into())
+                        .await?;
                 }
                 AvChannelMessage::SetupResponse(_chan, _m) => unimplemented!(),
                 AvChannelMessage::VideoFocusRequest(_chan, m) => {
-                    if let Some(v) = main.supports_video() {
-                        let mut m2 = Wifi::VideoFocusIndication::new();
-                        v.set_focus(m.focus_mode() == Wifi::video_focus_mode::Enum::FOCUSED)
-                            .await;
-                        m2.set_focus_mode(m.focus_mode());
-                        m2.set_unrequested(false);
-                        stream
-                            .write_frame(
-                                AvChannelMessage::VideoIndicationResponse(channel, m2).into(),
-                            )
-                            .await?;
-                    }
+                    let mut m2 = Wifi::VideoFocusIndication::new();
+                    main.set_focus(m.focus_mode() == Wifi::video_focus_mode::Enum::FOCUSED)
+                        .await;
+                    m2.set_focus_mode(m.focus_mode());
+                    m2.set_unrequested(false);
+                    stream
+                        .write_frame(AvChannelMessage::VideoIndicationResponse(channel, m2).into())
+                        .await?;
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
                 AvChannelMessage::StartIndication(_chan, m) => {

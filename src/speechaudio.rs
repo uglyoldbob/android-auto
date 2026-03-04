@@ -53,15 +53,10 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
                 AndroidAutoCommonMessage::ChannelOpenResponse(_, _) => unimplemented!(),
                 AndroidAutoCommonMessage::ChannelOpenRequest(_m) => {
                     let mut m2 = Wifi::ChannelOpenResponse::new();
-                    let mut status = false;
-                    if let Some(a) = main.supports_audio_output() {
-                        if a.open_channel(crate::AudioChannelType::Speech)
-                            .await
-                            .is_ok()
-                        {
-                            status = true;
-                        }
-                    }
+                    let status = main
+                        .open_output_channel(crate::AudioChannelType::Speech)
+                        .await
+                        .is_ok();
                     m2.set_status(if status {
                         Wifi::status::Enum::OK
                     } else {
@@ -82,9 +77,8 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
                 AvChannelMessage::AvChannelOpen(_chan, _m) => todo!(),
                 AvChannelMessage::MediaIndicationAck(_, _) => unimplemented!(),
                 AvChannelMessage::MediaIndication(_chan, _timestamp, data) => {
-                    if let Some(a) = main.supports_audio_output() {
-                        a.receive_audio(crate::AudioChannelType::Speech, data).await
-                    }
+                    main.receive_output_audio(crate::AudioChannelType::Speech, data)
+                        .await
                 }
                 AvChannelMessage::SetupRequest(_chan, _m) => {
                     let mut m2 = Wifi::AVChannelSetupResponse::new();
@@ -106,14 +100,12 @@ impl ChannelHandlerTrait for SpeechAudioChannelHandler {
                 }
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
                 AvChannelMessage::StartIndication(_, _) => {
-                    if let Some(a) = main.supports_audio_output() {
-                        a.start_audio(crate::AudioChannelType::Speech).await;
-                    }
+                    main.start_output_audio(crate::AudioChannelType::Speech)
+                        .await;
                 }
                 AvChannelMessage::StopIndication(_, _) => {
-                    if let Some(a) = main.supports_audio_output() {
-                        a.stop_audio(crate::AudioChannelType::Speech).await;
-                    }
+                    main.stop_output_audio(crate::AudioChannelType::Speech)
+                        .await;
                 }
             }
             return Ok(());

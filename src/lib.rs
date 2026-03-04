@@ -164,13 +164,15 @@ static CHANNEL_HANDLERS: tokio::sync::RwLock<Vec<ChannelHandler>> =
 
 /// The base trait for crate users to implement
 #[async_trait::async_trait]
-pub trait AndroidAutoMainTrait: Send + Sync {
-    /// This allows the incoming video stream to be processed
-    #[inline(always)]
-    fn supports_video(&self) -> Option<&dyn AndroidAutoVideoChannelTrait> {
-        None
-    }
-
+pub trait AndroidAutoMainTrait:
+    AndroidAutoSensorTrait
+    + AndroidAutoAudioOutputTrait
+    + AndroidAutoInputChannelTrait
+    + AndroidAutoAudioInputTrait
+    + AndroidAutoVideoChannelTrait
+    + Send
+    + Sync
+{
     /// Implement this to indicate that bluetooth hardware is possible, return None if bluetooth hardware is not present
     #[inline(always)]
     fn supports_bluetooth(&self) -> Option<&dyn AndroidAutoBluetoothTrait> {
@@ -190,29 +192,8 @@ pub trait AndroidAutoMainTrait: Send + Sync {
         None
     }
 
-    /// Implement this to support input
-    #[inline(always)]
-    fn supports_input(&self) -> Option<&dyn AndroidAutoInputChannelTrait> {
-        None
-    }
-
-    /// Implement this to support audio output
-    fn supports_audio_output(&self) -> Option<&dyn AndroidAutoAudioOutputTrait> {
-        None
-    }
-
-    /// Implement this to support audio input
-    fn supports_audio_input(&self) -> Option<&dyn AndroidAutoAudioInputTrait> {
-        None
-    }
-
     /// Implement this to support navigation
     fn supports_navigation(&self) -> Option<&dyn AndroidAutoNavigationTrait> {
-        None
-    }
-
-    /// Implement this to support sensors
-    fn supports_sensors(&self) -> Option<&dyn AndroidAutoSensorTrait> {
         None
     }
 
@@ -247,7 +228,7 @@ pub trait AndroidAutoWirelessTrait: AndroidAutoMainTrait {
 
 /// This trait is implemented by users that support navigation indicators
 #[async_trait::async_trait]
-pub trait AndroidAutoSensorTrait: AndroidAutoMainTrait {
+pub trait AndroidAutoSensorTrait {
     /// Returns the types of sensors supported
     fn get_supported_sensors(&self) -> &SensorInformation;
     /// Start the indicated sensor
@@ -267,7 +248,7 @@ pub trait AndroidAutoNavigationTrait: AndroidAutoMainTrait {
 
 /// This trait is implemented by users wishing to display a video stream from an android auto (phone probably).
 #[async_trait::async_trait]
-pub trait AndroidAutoVideoChannelTrait: AndroidAutoMainTrait {
+pub trait AndroidAutoVideoChannelTrait {
     /// Parse a chunk of h264 video data
     async fn receive_video(&self, data: Vec<u8>, timestamp: Option<u64>);
     /// Setup the video device to receive h264 video, if anything is required. Return Ok(()) if setup was good, Err(()) if it was not good
@@ -295,30 +276,30 @@ pub enum AudioChannelType {
 
 /// This trait is implemented by users that have audio output capabilities
 #[async_trait::async_trait]
-pub trait AndroidAutoAudioOutputTrait: AndroidAutoMainTrait {
+pub trait AndroidAutoAudioOutputTrait {
     /// Opens the specified channel
-    async fn open_channel(&self, t: AudioChannelType) -> Result<(), ()>;
+    async fn open_output_channel(&self, t: AudioChannelType) -> Result<(), ()>;
     /// Closes the specified channel
-    async fn close_channel(&self, t: AudioChannelType) -> Result<(), ()>;
+    async fn close_output_channel(&self, t: AudioChannelType) -> Result<(), ()>;
     /// Receive a chunk of audio data for the specified channel
-    async fn receive_audio(&self, t: AudioChannelType, data: Vec<u8>);
+    async fn receive_output_audio(&self, t: AudioChannelType, data: Vec<u8>);
     /// The specified audio channel will start
-    async fn start_audio(&self, t: AudioChannelType);
+    async fn start_output_audio(&self, t: AudioChannelType);
     /// The specified audio channel will stop
-    async fn stop_audio(&self, t: AudioChannelType);
+    async fn stop_output_audio(&self, t: AudioChannelType);
 }
 
 /// This trait is implemented by users that have audio input capabilities
 #[async_trait::async_trait]
-pub trait AndroidAutoAudioInputTrait: AndroidAutoMainTrait {
+pub trait AndroidAutoAudioInputTrait {
     /// Opens the channel
-    async fn open_channel(&self) -> Result<(), ()>;
+    async fn open_input_channel(&self) -> Result<(), ()>;
     /// Closes the channel
-    async fn close_channel(&self) -> Result<(), ()>;
+    async fn close_input_channel(&self) -> Result<(), ()>;
     /// The audio channel will start
-    async fn start_audio(&self);
+    async fn start_input_audio(&self);
     /// The audio channel will stop
-    async fn stop_audio(&self);
+    async fn stop_input_audio(&self);
 }
 
 /// The configuration for an input channel
@@ -332,7 +313,7 @@ pub struct InputConfiguration {
 
 /// This trait is implemented by users that have inputs for their head unit
 #[async_trait::async_trait]
-pub trait AndroidAutoInputChannelTrait: AndroidAutoMainTrait {
+pub trait AndroidAutoInputChannelTrait {
     /// A binding request for the specified keycode, generally the same code reported in `AndroidAutoConfig::keycodes_supported`
     async fn binding_request(&self, code: u32) -> Result<(), ()>;
     /// Retrieve the input configuration
@@ -1565,23 +1546,13 @@ async fn handle_client_generic<
     {
         let mut channel_handlers: Vec<ChannelHandler> = Vec::new();
         channel_handlers.push(ControlChannelHandler::new().into());
-        if main.supports_input().is_some() {
-            channel_handlers.push(InputChannelHandler {}.into());
-        }
-        if main.supports_sensors().is_some() {
-            channel_handlers.push(SensorChannelHandler {}.into());
-        }
-        if main.supports_video().is_some() {
-            channel_handlers.push(VideoChannelHandler::new().into());
-        }
-        if main.supports_audio_output().is_some() {
-            channel_handlers.push(MediaAudioChannelHandler {}.into());
-            channel_handlers.push(SpeechAudioChannelHandler {}.into());
-            channel_handlers.push(SystemAudioChannelHandler {}.into());
-        }
-        if main.supports_audio_input().is_some() {
-            channel_handlers.push(AvInputChannelHandler {}.into());
-        }
+        channel_handlers.push(InputChannelHandler {}.into());
+        channel_handlers.push(SensorChannelHandler {}.into());
+        channel_handlers.push(VideoChannelHandler::new().into());
+        channel_handlers.push(MediaAudioChannelHandler {}.into());
+        channel_handlers.push(SpeechAudioChannelHandler {}.into());
+        channel_handlers.push(SystemAudioChannelHandler {}.into());
+        channel_handlers.push(AvInputChannelHandler {}.into());
         if main.supports_bluetooth().is_some() {
             channel_handlers.push(BluetoothChannelHandler {}.into());
         }

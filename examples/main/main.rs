@@ -148,26 +148,26 @@ impl android_auto::AndroidAutoSensorTrait for AndroidAuto {
 
 #[async_trait::async_trait]
 impl android_auto::AndroidAutoAudioOutputTrait for AndroidAuto {
-    async fn open_channel(&self, t: android_auto::AudioChannelType) -> Result<(), ()> {
+    async fn open_output_channel(&self, t: android_auto::AudioChannelType) -> Result<(), ()> {
         let s = self.inner.lock().await;
 
         Ok(())
     }
 
-    async fn close_channel(&self, t: android_auto::AudioChannelType) -> Result<(), ()> {
+    async fn close_output_channel(&self, t: android_auto::AudioChannelType) -> Result<(), ()> {
         let s = self.inner.lock().await;
         Ok(())
     }
 
-    async fn receive_audio(&self, t: android_auto::AudioChannelType, data: Vec<u8>) {
+    async fn receive_output_audio(&self, t: android_auto::AudioChannelType, data: Vec<u8>) {
         let s = self.inner.lock().await;
     }
 
-    async fn start_audio(&self, t: android_auto::AudioChannelType) {
+    async fn start_output_audio(&self, t: android_auto::AudioChannelType) {
         let s = self.inner.lock().await;
     }
 
-    async fn stop_audio(&self, t: android_auto::AudioChannelType) {
+    async fn stop_output_audio(&self, t: android_auto::AudioChannelType) {
         let s = self.inner.lock().await;
     }
 }
@@ -185,19 +185,23 @@ impl android_auto::AndroidAutoInputChannelTrait for AndroidAuto {
 
 #[async_trait::async_trait]
 impl android_auto::AndroidAutoAudioInputTrait for AndroidAuto {
-    async fn open_channel(&self) -> Result<(), ()> {
+    async fn open_input_channel(&self) -> Result<(), ()> {
         Ok(())
     }
-    async fn close_channel(&self) -> Result<(), ()> {
+    async fn close_input_channel(&self) -> Result<(), ()> {
         Ok(())
     }
-    async fn start_audio(&self) {
+    async fn start_input_audio(&self) {
         log::error!("Start audio input channel");
     }
-    async fn stop_audio(&self) {
+    async fn stop_input_audio(&self) {
         log::error!("Stop audio input channel");
     }
 }
+
+#[cfg(feature = "usb")]
+#[async_trait::async_trait]
+impl android_auto::AndroidAutoWiredTrait for AndroidAuto {}
 
 #[async_trait::async_trait]
 impl android_auto::AndroidAutoMainTrait for AndroidAuto {
@@ -218,10 +222,6 @@ impl android_auto::AndroidAutoMainTrait for AndroidAuto {
         s.arecv.take()
     }
 
-    fn supports_video(&self) -> Option<&dyn android_auto::AndroidAutoVideoChannelTrait> {
-        Some(self)
-    }
-
     #[cfg(feature = "wireless")]
     fn supports_bluetooth(&self) -> Option<&dyn android_auto::AndroidAutoBluetoothTrait> {
         Some(self)
@@ -232,20 +232,9 @@ impl android_auto::AndroidAutoMainTrait for AndroidAuto {
         Some(Arc::new(self.clone()))
     }
 
-    fn supports_sensors(&self) -> Option<&dyn android_auto::AndroidAutoSensorTrait> {
-        Some(self)
-    }
-
-    fn supports_audio_output(&self) -> Option<&dyn android_auto::AndroidAutoAudioOutputTrait> {
-        Some(self)
-    }
-
-    fn supports_audio_input(&self) -> Option<&dyn android_auto::AndroidAutoAudioInputTrait> {
-        Some(self)
-    }
-
-    fn supports_input(&self) -> Option<&dyn android_auto::AndroidAutoInputChannelTrait> {
-        Some(self)
+    #[cfg(feature = "usb")]
+    fn supports_wired(&self) -> Option<Arc<dyn android_auto::AndroidAutoWiredTrait>> {
+        Some(Arc::new(self.clone()))
     }
 }
 

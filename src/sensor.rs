@@ -97,15 +97,13 @@ impl ChannelHandlerTrait for SensorChannelHandler {
     ) -> Option<Wifi::ChannelDescriptor> {
         let mut chan = ChannelDescriptor::new();
         let mut sensor = Wifi::SensorChannel::new();
-        if let Some(snsrs) = main.supports_sensors() {
-            let s = snsrs.get_supported_sensors();
-            for s in &s.sensors {
-                sensor.sensors.push({
-                    let mut sensor1 = Wifi::Sensor::new();
-                    sensor1.set_type(*s);
-                    sensor1
-                });
-            }
+        let s = main.get_supported_sensors();
+        for s in &s.sensors {
+            sensor.sensors.push({
+                let mut sensor1 = Wifi::Sensor::new();
+                sensor1.set_type(*s);
+                sensor1
+            });
         }
         chan.sensor_channel.0.replace(Box::new(sensor));
         chan.set_channel_id(chanid as u32);
@@ -135,16 +133,14 @@ impl ChannelHandlerTrait for SensorChannelHandler {
                 SensorMessage::SensorStartRequest(_chan, m) => {
                     let mut m2 = Wifi::SensorStartResponseMessage::new();
 
-                    if let Some(sns) = main.supports_sensors() {
-                        let stat = match sns.start_sensor(m.sensor_type()).await {
-                            Ok(_) => Wifi::status::Enum::OK,
-                            Err(_) => Wifi::status::Enum::FAIL,
-                        };
-                        m2.set_status(stat);
-                        stream
-                            .write_frame(SensorMessage::SensorStartResponse(channel, m2).into())
-                            .await?;
-                    }
+                    let stat = match main.start_sensor(m.sensor_type()).await {
+                        Ok(_) => Wifi::status::Enum::OK,
+                        Err(_) => Wifi::status::Enum::FAIL,
+                    };
+                    m2.set_status(stat);
+                    stream
+                        .write_frame(SensorMessage::SensorStartResponse(channel, m2).into())
+                        .await?;
                 }
             }
             return Ok(());

@@ -67,16 +67,14 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 AvChannelMessage::AvChannelOpen(_chan, m) => {
-                    if let Some(a) = main.supports_audio_input() {
-                        if m.open() {
-                            a.open_channel()
-                                .await
-                                .map_err(|_| FrameIoError::AudioInputOpenError)?;
-                        } else {
-                            a.close_channel()
-                                .await
-                                .map_err(|_| FrameIoError::AudioInputCloseError)?;
-                        }
+                    if m.open() {
+                        main.open_input_channel()
+                            .await
+                            .map_err(|_| FrameIoError::AudioInputOpenError)?;
+                    } else {
+                        main.close_input_channel()
+                            .await
+                            .map_err(|_| FrameIoError::AudioInputCloseError)?;
                     }
                 }
                 AvChannelMessage::MediaIndicationAck(_, _) => {}
@@ -94,14 +92,10 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
                 AvChannelMessage::VideoFocusRequest(_chan, _m) => unimplemented!(),
                 AvChannelMessage::VideoIndicationResponse(_, _) => unimplemented!(),
                 AvChannelMessage::StartIndication(_, _) => {
-                    if let Some(a) = main.supports_audio_input() {
-                        a.start_audio().await;
-                    }
+                    main.start_input_audio().await;
                 }
                 AvChannelMessage::StopIndication(_, _) => {
-                    if let Some(a) = main.supports_audio_input() {
-                        a.stop_audio().await;
-                    }
+                    main.stop_input_audio().await;
                 }
             }
             return Ok(());
