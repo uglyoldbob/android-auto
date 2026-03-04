@@ -327,7 +327,8 @@ impl eframe::App for MyEguiApp {
                                 log::error!("Failed to decode android auto video {:?}", e);
                             }
                             Ok(Some(image)) => {
-                                if units.peek().is_none() {
+                                log::info!("Got a video frame");
+                                {
                                     use openh264::formats::YUVSource;
                                     let rgb_len = image.rgb8_len();
                                     let mut rgb_raw = vec![0; rgb_len];
@@ -346,12 +347,14 @@ impl eframe::App for MyEguiApp {
                                         pixels,
                                     };
                                     if self.android_auto_texture.is_none() {
+                                        log::info!("Loading new texture");
                                         self.android_auto_texture = Some(ctx.load_texture(
                                             "android_auto",
                                             image,
                                             egui::TextureOptions::LINEAR,
                                         ));
                                     } else if let Some(t) = &mut self.android_auto_texture {
+                                        log::info!("Drawing over existing texture");
                                         t.set_partial([0, 0], image, egui::TextureOptions::LINEAR);
                                     }
                                 }
@@ -365,6 +368,9 @@ impl eframe::App for MyEguiApp {
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             let size = ui.available_size();
+            if self.android_auto_texture.is_none() {
+                ui.label("no image to show");
+            }
             if let Some(t) = &self.android_auto_texture {
                 ui.label("Got some video data to show you");
                 let isize = t.size()[1];
@@ -476,18 +482,26 @@ fn main() -> Result<(), u32> {
                     Arc::new(bluetooth.build().await.expect("Could not open bluetooth"));
                 (bluechan.1, bluetooth)
             };
+            bluetooth
+                .set_discoverable(true)
+                .await
+                .expect("Failed to make bluetooth discoverable");
 
             tokio::spawn(async move {
                 loop {
                     if let Some(m) = bluechan.recv().await {
                         match m {
-                            MessageToBluetoothHost::DisplayPasskey(_, sender) => {
+                            MessageToBluetoothHost::DisplayPasskey(a, sender) => {
+                                log::info!("Passkey is {}", a);
                                 let _ = sender.send(bluetooth_rust::ResponseToPasskey::Yes).await;
                             }
-                            MessageToBluetoothHost::ConfirmPasskey(_, sender) => {
+                            MessageToBluetoothHost::ConfirmPasskey(a, sender) => {
+                                log::info!("Passkey is confirmed {}", a);
                                 let _ = sender.send(bluetooth_rust::ResponseToPasskey::Yes).await;
                             }
-                            MessageToBluetoothHost::CancelDisplayPasskey => {}
+                            MessageToBluetoothHost::CancelDisplayPasskey => {
+                                log::info!("Cancel show passkey");
+                            }
                         }
                     }
                 }
