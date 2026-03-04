@@ -1,10 +1,12 @@
 //! The main example for this library. Use release mode to run it. openh264 is too slow for debug mode.
 #[cfg(feature = "wireless")]
 use bluetooth_rust::{BluetoothAdapterTrait, MessageToBluetoothHost};
+use ringbuf::traits::{Consumer, Observer, Producer};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
 
 use android_auto::{HeadUnitInfo, VideoConfiguration};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use eframe::egui;
 
 #[cfg(feature = "wireless")]
@@ -24,11 +26,21 @@ async fn get_wifi_interface(nmrs: &nmrs::NetworkManager) -> Option<nmrs::Device>
     None
 }
 
+type AudioProducer = ringbuf::HeapProd<i16>;
+type AudioConsumer = ringbuf::HeapCons<i16>;
+
 struct AndroidAutoInner {
     connected: bool,
     send: tokio::sync::mpsc::Sender<MessageFromAsync>,
     arecv: Option<tokio::sync::mpsc::Receiver<android_auto::SendableAndroidAutoMessage>>,
     android_send: tokio::sync::mpsc::Sender<android_auto::SendableAndroidAutoMessage>,
+    audio_output: Option<cpal::Device>,
+    audio_input: Option<cpal::Device>,
+    cpal_host: cpal::Host,
+    media_stream: Option<(AudioProducer, cpal::Stream)>,
+    sys_stream: Option<(AudioProducer, cpal::Stream)>,
+    speech_stream: Option<(AudioProducer, cpal::Stream)>,
+    input_stream: Option<(AudioConsumer, cpal::Stream)>,
 }
 
 #[cfg(feature = "wireless")]
@@ -95,7 +107,7 @@ impl android_auto::AndroidAutoVideoChannelTrait for AndroidAuto {
 
     async fn wait_for_focus(&self) {}
 
-    async fn set_focus(&self, focus: bool) {}
+    async fn set_focus(&self, _focus: bool) {}
 
     fn retrieve_video_configuration(&self) -> &VideoConfiguration {
         &self.config
@@ -150,7 +162,6 @@ impl android_auto::AndroidAutoSensorTrait for AndroidAuto {
 impl android_auto::AndroidAutoAudioOutputTrait for AndroidAuto {
     async fn open_output_channel(&self, t: android_auto::AudioChannelType) -> Result<(), ()> {
         let s = self.inner.lock().await;
-
         Ok(())
     }
 
@@ -160,15 +171,52 @@ impl android_auto::AndroidAutoAudioOutputTrait for AndroidAuto {
     }
 
     async fn receive_output_audio(&self, t: android_auto::AudioChannelType, data: Vec<u8>) {
-        let s = self.inner.lock().await;
+        let mut s = self.inner.lock().await;
+        let r2: Vec<i16> = data
+            .chunks_exact(2)
+            .map(|v| i16::from_le_bytes([v[0], v[1]]))
+            .collect();
+        match t {
+            android_auto::AudioChannelType::Media => {
+                s.media_stream.as_mut().map(|m| m.0.push_slice(&r2));
+            }
+            android_auto::AudioChannelType::System => {
+                s.sys_stream.as_mut().map(|m| m.0.push_slice(&r2));
+            }
+            android_auto::AudioChannelType::Speech => {
+                s.speech_stream.as_mut().map(|m| m.0.push_slice(&r2));
+            }
+        }
     }
 
     async fn start_output_audio(&self, t: android_auto::AudioChannelType) {
         let s = self.inner.lock().await;
+        match t {
+            android_auto::AudioChannelType::Media => {
+                s.media_stream.as_ref().map(|m| m.1.play());
+            }
+            android_auto::AudioChannelType::System => {
+                s.sys_stream.as_ref().map(|m| m.1.play());
+            }
+            android_auto::AudioChannelType::Speech => {
+                s.speech_stream.as_ref().map(|m| m.1.play());
+            }
+        }
     }
 
     async fn stop_output_audio(&self, t: android_auto::AudioChannelType) {
         let s = self.inner.lock().await;
+        match t {
+            android_auto::AudioChannelType::Media => {
+                s.media_stream.as_ref().map(|m| m.1.pause());
+            }
+            android_auto::AudioChannelType::System => {
+                s.sys_stream.as_ref().map(|m| m.1.pause());
+            }
+            android_auto::AudioChannelType::Speech => {
+                s.speech_stream.as_ref().map(|m| m.1.pause());
+            }
+        }
     }
 }
 
@@ -192,10 +240,37 @@ impl android_auto::AndroidAutoAudioInputTrait for AndroidAuto {
         Ok(())
     }
     async fn start_input_audio(&self) {
+        let mut s = self.inner.lock().await;
         log::error!("Start audio input channel");
+        if let Some(ai) = &mut s.input_stream {
+            let _ = ai.1.play();
+        }
     }
     async fn stop_input_audio(&self) {
+        let mut s = self.inner.lock().await;
         log::error!("Stop audio input channel");
+        if let Some(ai) = &mut s.input_stream {
+            let _ = ai.1.pause();
+        }
+    }
+
+    async fn get_input_audio(&self) {
+        let mut s = self.inner.lock().await;
+        if let Some(ai) = &mut s.input_stream {
+            if !ai.0.is_empty() {
+                let len = ai.0.occupied_len();
+                let mut v = vec![0; len];
+                let olen = ai.0.pop_slice(&mut v);
+                let data = v[0..olen].to_vec();
+                let timestamp: u64 = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_micros() as u64;
+                let data2 = data.iter().map(|e| e.to_le_bytes()).flatten().collect();
+                let p = android_auto::AndroidAutoMessage::Audio(Some(timestamp), data2);
+                let _ = s.android_send.send(p.sendable()).await;
+            }
+        }
     }
 }
 
@@ -263,12 +338,195 @@ impl AndroidAuto {
                 }
             }
         });
+        let (ao, ai, h, media_stream, sys_stream, speech_stream, input_stream) = {
+            let h = cpal::default_host();
+            let mut ao = h.default_output_device();
+            let mut ai = h.default_input_device();
+            let mut media_stream = None;
+            let mut sys_stream = None;
+            let mut speech_stream = None;
+            let mut input_stream = None;
+            if let Some(ai) = &mut ai {
+                if let Ok(c) = ai.supported_input_configs() {
+                    let mut in_config = None;
+                    for c in c {
+                        const IN_RATE: u32 = 16000;
+                        const IN_CHANNELS: u16 = 1;
+                        if c.min_sample_rate() <= IN_RATE && c.max_sample_rate() >= IN_RATE {
+                            if c.channels() == IN_CHANNELS {
+                                if c.sample_format() == cpal::SampleFormat::I16 {
+                                    in_config = c.try_with_sample_rate(IN_RATE);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(mc) = in_config {
+                        let rb = ringbuf::HeapRb::new(16000);
+                        let (mut producer, consumer) = ringbuf::traits::Split::split(rb);
+                        let s = ai.build_input_stream(
+                            &mc.config(),
+                            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                                producer.push_slice(data);
+                            },
+                            move |err| {
+                                log::error!("Error in media audio output: {:?}", err);
+                            },
+                            None,
+                        );
+                        if let Ok(s) = s {
+                            input_stream = Some((consumer, s));
+                        }
+                    }
+                }
+            }
+            if let Some(ao) = &mut ao {
+                if let Ok(c) = ao.supported_output_configs() {
+                    {
+                        let mut media_config = None;
+                        let mut sys_config = None;
+                        let mut speech_config = None;
+                        for c in c {
+                            const MEDIA_RATE: u32 = 48000;
+                            const MEDIA_CHANNELS: u16 = 2;
+                            if c.min_sample_rate() <= MEDIA_RATE
+                                && c.max_sample_rate() >= MEDIA_RATE
+                            {
+                                if c.channels() == MEDIA_CHANNELS {
+                                    if c.sample_format() == cpal::SampleFormat::I16 {
+                                        media_config = c.try_with_sample_rate(MEDIA_RATE);
+                                    }
+                                }
+                            }
+
+                            const SYS_RATE: u32 = 16000;
+                            const SYS_CHANNELS: u16 = 1;
+                            if c.min_sample_rate() <= SYS_RATE && c.max_sample_rate() >= SYS_RATE {
+                                if c.channels() == SYS_CHANNELS {
+                                    if c.sample_format() == cpal::SampleFormat::I16 {
+                                        sys_config = c.try_with_sample_rate(SYS_RATE);
+                                    }
+                                }
+                            }
+
+                            const SPEECH_RATE: u32 = 16000;
+                            const SPEECH_CHANNELS: u16 = 1;
+                            if c.min_sample_rate() <= SPEECH_RATE
+                                && c.max_sample_rate() >= SPEECH_RATE
+                            {
+                                if c.channels() == SPEECH_CHANNELS {
+                                    if c.sample_format() == cpal::SampleFormat::I16 {
+                                        speech_config = c.try_with_sample_rate(SPEECH_RATE);
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(mc) = media_config {
+                            let rb = ringbuf::HeapRb::new(48000);
+                            let (producer, mut consumer) = ringbuf::traits::Split::split(rb);
+                            let s = ao.build_output_stream(
+                                &mc.config(),
+                                move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                                    let mut index = 0;
+                                    while index < data.len() {
+                                        let c = ringbuf::traits::Consumer::pop_slice(
+                                            &mut consumer,
+                                            &mut data[index..],
+                                        );
+                                        if c == 0 {
+                                            break;
+                                        }
+                                        index += c;
+                                    }
+                                },
+                                move |err| {
+                                    log::error!("Error in media audio output: {:?}", err);
+                                },
+                                None,
+                            );
+                            if let Ok(s) = s {
+                                media_stream = Some((producer, s));
+                            }
+                        }
+                        if let Some(mc) = sys_config {
+                            let rb = ringbuf::HeapRb::new(16000);
+                            let (producer, mut consumer) = ringbuf::traits::Split::split(rb);
+                            let s = ao.build_output_stream(
+                                &mc.config(),
+                                move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                                    let mut index = 0;
+                                    while index < data.len() {
+                                        let c = ringbuf::traits::Consumer::pop_slice(
+                                            &mut consumer,
+                                            &mut data[index..],
+                                        );
+                                        if c == 0 {
+                                            break;
+                                        }
+                                        index += c;
+                                    }
+                                },
+                                move |err| {
+                                    log::error!("Error in media audio output: {:?}", err);
+                                },
+                                None,
+                            );
+                            if let Ok(s) = s {
+                                sys_stream = Some((producer, s));
+                            }
+                        }
+                        if let Some(mc) = speech_config {
+                            let rb = ringbuf::HeapRb::new(16000);
+                            let (producer, mut consumer) = ringbuf::traits::Split::split(rb);
+                            let s = ao.build_output_stream(
+                                &mc.config(),
+                                move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                                    let mut index = 0;
+                                    while index < data.len() {
+                                        let c = ringbuf::traits::Consumer::pop_slice(
+                                            &mut consumer,
+                                            &mut data[index..],
+                                        );
+                                        if c == 0 {
+                                            break;
+                                        }
+                                        index += c;
+                                    }
+                                },
+                                move |err| {
+                                    log::error!("Error in media audio output: {:?}", err);
+                                },
+                                None,
+                            );
+                            if let Ok(s) = s {
+                                speech_stream = Some((producer, s));
+                            }
+                        }
+                    }
+                }
+            }
+            (
+                ao,
+                ai,
+                h,
+                media_stream,
+                sys_stream,
+                speech_stream,
+                input_stream,
+            )
+        };
         Self {
             inner: Arc::new(Mutex::new(AndroidAutoInner {
                 connected: false,
                 send,
                 arecv: Some(android_recv),
                 android_send,
+                cpal_host: h,
+                audio_output: ao,
+                audio_input: ai,
+                media_stream,
+                sys_stream,
+                speech_stream,
+                input_stream,
             })),
             #[cfg(feature = "wireless")]
             bluetooth,

@@ -298,6 +298,8 @@ pub trait AndroidAutoAudioInputTrait {
     async fn close_input_channel(&self) -> Result<(), ()>;
     /// The audio channel will start
     async fn start_input_audio(&self);
+    /// Poll the audio input channel
+    async fn get_input_audio(&self);
     /// The audio channel will stop
     async fn stop_input_audio(&self);
 }
@@ -947,6 +949,7 @@ trait ChannelHandlerTrait {
 }
 
 /// A message sent for an av channel
+#[derive(Debug)]
 enum AvChannelMessage {
     /// A message to start setup of the av channel
     SetupRequest(ChannelId, Wifi::AVChannelSetupRequest),

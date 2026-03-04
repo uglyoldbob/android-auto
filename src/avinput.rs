@@ -65,6 +65,7 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         }
         let msg2: Result<AvChannelMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
+            log::info!("Received: {:?}", msg2);
             match msg2 {
                 AvChannelMessage::AvChannelOpen(_chan, m) => {
                     if m.open() {

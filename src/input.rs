@@ -132,9 +132,8 @@ impl ChannelHandlerTrait for InputChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 InputMessage::BindingRequest(chan, m) => {
-                    let mut status = false;
+                    let mut status = true;
                     let ics = main.retrieve_input_configuration();
-                    status = true;
                     for c in &m.scan_codes {
                         if !ics.keycodes.contains(&(*c as u32)) {
                             status = false;
