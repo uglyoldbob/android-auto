@@ -1,4 +1,4 @@
-//! The main example for this library
+//! The main example for this library. Use release mode to run it. openh264 is too slow for debug mode.
 use bluetooth_rust::{BluetoothAdapterTrait, MessageToBluetoothHost};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
@@ -23,7 +23,6 @@ async fn get_wifi_interface(nmrs: &nmrs::NetworkManager) -> Option<nmrs::Device>
 
 struct AndroidAutoInner {
     connected: bool,
-    recv: tokio::sync::mpsc::Receiver<MessageToAsync>,
     send: tokio::sync::mpsc::Sender<MessageFromAsync>,
     arecv: Option<tokio::sync::mpsc::Receiver<android_auto::SendableAndroidAutoMessage>>,
     android_send: tokio::sync::mpsc::Sender<android_auto::SendableAndroidAutoMessage>,
@@ -68,7 +67,7 @@ enum MessageFromAsync {
 }
 
 enum MessageToAsync {
-    Nothing,
+    AndroidAutoMessage(android_auto::SendableAndroidAutoMessage),
 }
 
 #[async_trait::async_trait]
@@ -242,7 +241,7 @@ impl android_auto::AndroidAutoMainTrait for AndroidAuto {
 
 impl AndroidAuto {
     fn new(
-        recv: tokio::sync::mpsc::Receiver<MessageToAsync>,
+        mut recv: tokio::sync::mpsc::Receiver<MessageToAsync>,
         send: tokio::sync::mpsc::Sender<MessageFromAsync>,
         bluetooth: Arc<bluetooth_rust::BluetoothAdapter>,
         blue_address: String,
@@ -253,11 +252,22 @@ impl AndroidAuto {
         let mut s = HashSet::new();
         s.insert(android_auto::Wifi::sensor_type::Enum::DRIVING_STATUS);
         s.insert(android_auto::Wifi::sensor_type::Enum::NIGHT_DATA);
+        let android_send2 = android_send.clone();
+        tokio::spawn(async move {
+            loop {
+                while let Some(m) = recv.recv().await {
+                    match m {
+                        MessageToAsync::AndroidAutoMessage(android_auto_message) => {
+                            let _ = android_send2.send(android_auto_message).await;
+                        }
+                    }
+                }
+            }
+        });
         Self {
             inner: Arc::new(Mutex::new(AndroidAutoInner {
                 connected: false,
                 send,
-                recv,
                 arecv: Some(android_recv),
                 android_send,
             })),
@@ -269,7 +279,7 @@ impl AndroidAuto {
             config: VideoConfiguration {
                 resolution: android_auto::Wifi::video_resolution::Enum::_720p,
                 fps: android_auto::Wifi::video_fps::Enum::_30,
-                dpi: 300,
+                dpi: 111,
             },
             sensors: android_auto::SensorInformation { sensors: s },
             input_config: android_auto::InputConfiguration {
@@ -315,11 +325,9 @@ impl MyEguiApp {
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint();
         while let Ok(v) = self.recv.try_recv() {
             match v {
                 MessageFromAsync::VideoData { data, timestamp: _ } => {
-                    log::info!("Received video data len {}", data.len());
                     let mut units = openh264::nal_units(&data).peekable();
                     while let Some(p) = units.next() {
                         match self.android_auto_video_decoder.decode(p) {
@@ -327,52 +335,43 @@ impl eframe::App for MyEguiApp {
                                 log::error!("Failed to decode android auto video {:?}", e);
                             }
                             Ok(Some(image)) => {
-                                log::info!("Got a video frame");
-                                {
-                                    use openh264::formats::YUVSource;
-                                    let rgb_len = image.rgb8_len();
-                                    let mut rgb_raw = vec![0; rgb_len];
-                                    image.write_rgb8(&mut rgb_raw);
-                                    let (w, h) = image.dimensions_uv();
-                                    let pixels: Vec<egui::Color32> = rgb_raw
-                                        .chunks_exact(3)
-                                        .map(|i| egui::Color32::from_rgb(i[0], i[1], i[2]))
-                                        .collect();
-                                    let image = egui::ColorImage {
-                                        source_size: egui::Vec2 {
-                                            x: w as f32 * 2.0,
-                                            y: h as f32 * 2.0,
-                                        },
-                                        size: [w * 2usize, h * 2usize],
-                                        pixels,
-                                    };
-                                    if self.android_auto_texture.is_none() {
-                                        log::info!("Loading new texture");
-                                        self.android_auto_texture = Some(ctx.load_texture(
-                                            "android_auto",
-                                            image,
-                                            egui::TextureOptions::LINEAR,
-                                        ));
-                                    } else if let Some(t) = &mut self.android_auto_texture {
-                                        log::info!("Drawing over existing texture");
-                                        t.set_partial([0, 0], image, egui::TextureOptions::LINEAR);
-                                    }
+                                use openh264::formats::YUVSource;
+                                let rgb_len = image.rgb8_len();
+                                let mut rgb_raw = vec![0; rgb_len];
+                                image.write_rgb8(&mut rgb_raw);
+                                let (w, h) = image.dimensions_uv();
+                                let pixels: Vec<egui::Color32> = rgb_raw
+                                    .chunks_exact(3)
+                                    .map(|i| egui::Color32::from_rgb(i[0], i[1], i[2]))
+                                    .collect();
+                                let image = egui::ColorImage {
+                                    source_size: egui::Vec2 {
+                                        x: w as f32 * 2.0,
+                                        y: h as f32 * 2.0,
+                                    },
+                                    size: [w * 2usize, h * 2usize],
+                                    pixels,
+                                };
+                                if self.android_auto_texture.is_none() {
+                                    self.android_auto_texture = Some(ctx.load_texture(
+                                        "android_auto",
+                                        image,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                } else if let Some(t) = &mut self.android_auto_texture {
+                                    t.set_partial([0, 0], image, egui::TextureOptions::LINEAR);
                                 }
                             }
                             _ => {}
                         }
                     }
-                    log::info!("Done parsing video data");
                 }
             }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             let size = ui.available_size();
-            if self.android_auto_texture.is_none() {
-                ui.label("no image to show");
-            }
             if let Some(t) = &self.android_auto_texture {
-                ui.label("Got some video data to show you");
+                ctx.request_repaint();
                 let isize = t.size()[1];
                 let zoom = isize as f32 / size.y;
                 let dsize = t.size_vec2() / zoom;
@@ -427,6 +426,9 @@ impl eframe::App for MyEguiApp {
                     if do_touch {
                         i_event.touch_event = android_auto::protobuf::MessageField::some(te);
                         let e = android_auto::AndroidAutoMessage::Input(i_event);
+                        let _ = self
+                            .send
+                            .blocking_send(MessageToAsync::AndroidAutoMessage(e.sendable()));
                     }
                 }
             }
