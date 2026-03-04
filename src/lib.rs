@@ -1623,12 +1623,20 @@ impl AndroidAutoServer {
         log::info!("Running android auto server");
         #[cfg(feature = "usb")]
         {
-            if let Some(_) = main.supports_wired() {
+            {
                 if let Ok(devs) = nusb::list_devices().await {
                     for dev in devs {
                         if usb::is_android_device(&dev) {
                             log::info!("USB DEVICE {:#?}", dev);
                             log::info!("ANDROID DEVICE");
+                            if let Ok(d) = dev.open().await {
+                                let aoa = usb::get_aoa_protocol(&d).await;
+                                log::info!("AOA is {:?}", aoa);
+                                usb::identify_accessory(&d).await;
+                                usb::accessory_start(&d).await;
+                                let aoa = usb::claim_aoa_interface(&d).await;
+                                log::info!("got aoa interface?");
+                            }
                         }
                     }
                 }
