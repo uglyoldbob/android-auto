@@ -44,6 +44,9 @@ use sysaudio::*;
 mod video;
 use video::*;
 
+#[cfg(feature = "usb")]
+mod usb;
+
 pub use protobuf;
 
 /// Errors that can occur when trying to receive frames
@@ -179,6 +182,12 @@ pub trait AndroidAutoMainTrait: Send + Sync {
         None
     }
 
+    /// Implement this to support wired android auto communications
+    #[inline(always)]
+    fn supports_wired(&self) -> Option<Arc<dyn AndroidAutoWiredTrait>> {
+        None
+    }
+
     /// Implement this to support input
     #[inline(always)]
     fn supports_input(&self) -> Option<&dyn AndroidAutoInputChannelTrait> {
@@ -215,6 +224,10 @@ pub trait AndroidAutoMainTrait: Send + Sync {
     async fn get_receiver(&self)
     -> Option<tokio::sync::mpsc::Receiver<SendableAndroidAutoMessage>>;
 }
+
+/// this trait is implemented by users that support wired (usb) android auto
+#[async_trait::async_trait]
+pub trait AndroidAutoWiredTrait: AndroidAutoMainTrait {}
 
 /// this trait is implemented by users that support bluetooth and wifi (both are required for wireless android auto)
 #[async_trait::async_trait]
@@ -1608,6 +1621,19 @@ impl AndroidAutoServer {
         main: T,
     ) -> Result<(), String> {
         log::info!("Running android auto server");
+        #[cfg(feature = "usb")]
+        {
+            if let Some(_) = main.supports_wired() {
+                if let Ok(devs) = nusb::list_devices().await {
+                    for dev in devs {
+                        if usb::is_android_device(&dev) {
+                            log::info!("USB DEVICE {:#?}", dev);
+                            log::info!("ANDROID DEVICE");
+                        }
+                    }
+                }
+            }
+        }
         if let Some(wireless) = main.supports_wireless() {
             let psettings = bluetooth_rust::BluetoothRfcommProfileSettings {
                 uuid: bluetooth_rust::BluetoothUuid::AndroidAuto
@@ -1644,7 +1670,7 @@ impl AndroidAutoServer {
             });
             Ok(())
         } else {
-            Err("Wireless not supported when it is currently required".to_string())
+            Ok(())
         }
     }
 
