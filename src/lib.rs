@@ -1196,6 +1196,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
                     std::io::ErrorKind::UnexpectedEof => SslHandshakeError::Disconnected,
                     _ => SslHandshakeError::Unexpected(e),
                 })?;
+                let _ = w.flush().await;
             }
         }
         Ok(())
@@ -1221,6 +1222,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
                     std::io::ErrorKind::UnexpectedEof => SslHandshakeError::Disconnected,
                     _ => SslHandshakeError::Unexpected(e),
                 })?;
+                let _ = w.flush().await;
             }
         }
         Ok(())
@@ -1252,11 +1254,13 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
         let mut s = self.writer.lock().await;
         let mut ssl_stream = self.ssl_client.lock().await;
         let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
-        s.write_all(&d2).await.map_err(|e| match e.kind() {
+        let a = s.write_all(&d2).await.map_err(|e| match e.kind() {
             std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
             std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
             _ => FrameTransmissionError::Unexpected(e),
-        })
+        });
+        let _ = s.flush().await;
+        a
     }
 
     /// Write a frame to the stream, encrypting if necessary
@@ -1267,11 +1271,13 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
         let mut s = self.writer.lock().await;
         let mut ssl_stream = self.ssl_client.lock().await;
         let d2: Vec<u8> = f.into_frame().await.build_vec(Some(&mut *ssl_stream)).await;
-        s.write_all(&d2).await.map_err(|e| match e.kind() {
+        let a = s.write_all(&d2).await.map_err(|e| match e.kind() {
             std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
             std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
             _ => FrameTransmissionError::Unexpected(e),
-        })
+        });
+        let _ = s.flush().await;
+        a
     }
 }
 
@@ -1459,7 +1465,7 @@ async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
                 let config2 = config.clone();
                 let _ = stream.set_nodelay(true);
                 wireless.connect().await;
-                if let Err(e) = handle_client(stream, addr, config2, wireless.as_ref()).await {
+                if let Err(e) = handle_client_tcp(stream, config2, wireless.as_ref()).await {
                     wireless.disconnect().await;
                     if false {
                         let mut ch = CHANNEL_HANDLERS.write().await;
@@ -1476,13 +1482,17 @@ async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
 }
 
 /// Handle a single android auto device for a head unit
-async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
-    stream: tokio::net::TcpStream,
-    addr: std::net::SocketAddr,
+async fn handle_client_generic<
+    T: AndroidAutoMainTrait + ?Sized,
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+>(
+    reader: R,
+    writer: W,
     config: AndroidAutoConfiguration,
     main: &T,
 ) -> Result<(), ClientError> {
-    log::info!("Got wifi client: {:?}", addr);
+    log::info!("Got android auto client");
     let mut root_store =
         rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let aautocertder = {
@@ -1534,9 +1544,7 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
     let server = "idontknow.com".try_into().unwrap();
     let ssl_client =
         rustls::ClientConnection::new(sslconfig, server).expect("Failed to build ssl client");
-
-    let stream = stream.into_split();
-    let sm = StreamMux::new(stream.0, stream.1, ssl_client);
+    let sm = StreamMux::new(reader, writer, ssl_client);
     let message_recv = main.get_receiver().await;
     let sm2 = sm.clone();
     let _task2 = if let Some(mut msgr) = message_recv {
@@ -1600,7 +1608,6 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
             ch.append(&mut channel_handlers);
         }
     }
-    log::debug!("Got a connection from {:?}", addr);
     sm.write_frame(AndroidAutoControlMessage::VersionRequest.into())
         .await
         .map_err(|e| {
@@ -1619,6 +1626,27 @@ async fn handle_client<T: AndroidAutoMainTrait + ?Sized>(
             }
         }
     }
+}
+
+/// Handle a single android auto device for a head unit
+async fn handle_client_tcp<T: AndroidAutoMainTrait + ?Sized>(
+    stream: tokio::net::TcpStream,
+    config: AndroidAutoConfiguration,
+    main: &T,
+) -> Result<(), ClientError> {
+    let stream = stream.into_split();
+    handle_client_generic(stream.0, stream.1, config, main).await
+}
+
+#[cfg(feature = "usb")]
+/// Handle a single android auto device for a head unit
+async fn handle_client_usb<T: AndroidAutoMainTrait + ?Sized>(
+    stream: usb::AndroidAutoUsb,
+    config: AndroidAutoConfiguration,
+    main: &T,
+) -> Result<(), ClientError> {
+    let stream = stream.into_split();
+    handle_client_generic(stream.0, stream.1, config, main).await
 }
 
 impl AndroidAutoServer {
@@ -1659,6 +1687,9 @@ impl AndroidAutoServer {
                                         let aauto = usb::AndroidAutoUsb::new(aoa);
                                         if let Some(aauto) = aauto {
                                             log::info!("got aoa interface?");
+                                            let a = handle_client_usb(aauto, config.clone(), &main)
+                                                .await;
+                                            log::info!("handled usb client: {:?}", a);
                                         }
                                     }
                                     Err(e) => {

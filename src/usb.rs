@@ -125,11 +125,8 @@ pub async fn claim_aoa_interface(device: &nusb::Device) -> nusb::Interface {
     device.claim_interface(0).await.unwrap()
 }
 
-#[pin_project::pin_project]
 pub struct AndroidAutoUsb {
-    #[pin]
     ep_in: nusb::io::EndpointRead<nusb::transfer::Bulk>,
-    #[pin]
     ep_out: nusb::io::EndpointWrite<nusb::transfer::Bulk>,
 }
 
@@ -148,38 +145,14 @@ impl AndroidAutoUsb {
         }
         None
     }
-}
 
-impl tokio::io::AsyncRead for AndroidAutoUsb {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        self.project().ep_in.poll_read(cx, buf)
-    }
-}
-
-impl tokio::io::AsyncWrite for AndroidAutoUsb {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        self.project().ep_out.poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        self.project().ep_out.poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        self.project().ep_out.poll_shutdown(cx)
+    /// split the struct
+    pub fn into_split(
+        self,
+    ) -> (
+        nusb::io::EndpointRead<nusb::transfer::Bulk>,
+        nusb::io::EndpointWrite<nusb::transfer::Bulk>,
+    ) {
+        (self.ep_in, self.ep_out)
     }
 }
