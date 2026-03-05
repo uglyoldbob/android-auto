@@ -40,5 +40,6 @@ default = ["wireless"]
 wireless = ["dep:bluetooth-rust"]
 usb = ["dep:nusb"]
 
+#this patch is needed for the v1 certificate in src/cert.rs
 [patch.crates-io]
 rustls-webpki = { git = "https://github.com/uglyoldbob/webpki", branch = "main5" }

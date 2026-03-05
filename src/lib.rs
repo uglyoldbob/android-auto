@@ -1642,7 +1642,7 @@ impl AndroidAutoServer {
         log::info!("Running android auto server");
         #[cfg(feature = "usb")]
         {
-            {
+            if main.supports_wired().is_some() {
                 if let Ok(devs) = nusb::list_devices().await {
                     for dev in devs {
                         if usb::is_android_device(&dev) {
