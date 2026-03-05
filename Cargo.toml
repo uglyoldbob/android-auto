@@ -36,7 +36,7 @@ zbus = "5.13.2"
 zvariant = "5.9.2"
 
 [features]
-default = ["wireless"]
+default = []
 wireless = ["dep:bluetooth-rust"]
 usb = ["dep:nusb"]
 
