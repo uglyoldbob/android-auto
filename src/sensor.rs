@@ -1,9 +1,8 @@
 //! Contains sensor channel code
 
 use super::{
-    AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoControlMessage,
-    AndroidAutoFrame, ChannelDescriptor, ChannelHandlerTrait, ChannelId, FrameHeader,
-    FrameHeaderContents, FrameHeaderType,
+    AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, ChannelDescriptor,
+    ChannelHandlerTrait, ChannelId, FrameHeader, FrameHeaderContents, FrameHeaderType,
 };
 use crate::{AndroidAutoMainTrait, StreamMux, Wifi};
 use protobuf::Message;

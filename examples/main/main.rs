@@ -1,7 +1,7 @@
 //! The main example for this library. Use release mode to run it. openh264 is too slow for debug mode.
 #[cfg(feature = "wireless")]
 use bluetooth_rust::{BluetoothAdapterTrait, MessageToBluetoothHost};
-use ringbuf::traits::{Consumer, Observer, Producer};
+use ringbuf::traits::Producer;
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
 
@@ -27,7 +27,6 @@ async fn get_wifi_interface(nmrs: &nmrs::NetworkManager) -> Option<nmrs::Device>
 }
 
 type AudioProducer = ringbuf::HeapProd<i16>;
-type AudioConsumer = ringbuf::HeapCons<i16>;
 
 struct AndroidAutoInner {
     connected: bool,
@@ -79,7 +78,7 @@ struct AndroidAuto {
 enum MessageFromAsync {
     VideoData {
         data: Vec<u8>,
-        timestamp: Option<u64>,
+        _timestamp: Option<u64>,
     },
 }
 
@@ -93,7 +92,10 @@ impl android_auto::AndroidAutoVideoChannelTrait for AndroidAuto {
         let i = self.inner.lock().await;
         let _ = i
             .send
-            .send(MessageFromAsync::VideoData { data, timestamp })
+            .send(MessageFromAsync::VideoData {
+                data,
+                _timestamp: timestamp,
+            })
             .await;
     }
 
@@ -158,13 +160,11 @@ impl android_auto::AndroidAutoSensorTrait for AndroidAuto {
 
 #[async_trait::async_trait]
 impl android_auto::AndroidAutoAudioOutputTrait for AndroidAuto {
-    async fn open_output_channel(&self, t: android_auto::AudioChannelType) -> Result<(), ()> {
-        let s = self.inner.lock().await;
+    async fn open_output_channel(&self, _t: android_auto::AudioChannelType) -> Result<(), ()> {
         Ok(())
     }
 
-    async fn close_output_channel(&self, t: android_auto::AudioChannelType) -> Result<(), ()> {
-        let s = self.inner.lock().await;
+    async fn close_output_channel(&self, _t: android_auto::AudioChannelType) -> Result<(), ()> {
         Ok(())
     }
 
@@ -348,7 +348,7 @@ impl AndroidAuto {
                 }
             }
         });
-        let (ao, ai, h, media_stream, sys_stream, speech_stream) = {
+        let (ai, media_stream, sys_stream, speech_stream) = {
             let h = cpal::default_host();
             let mut ao = h.default_output_device();
             let ai = h.default_input_device();
@@ -480,7 +480,7 @@ impl AndroidAuto {
                     }
                 }
             }
-            (ao, ai, h, media_stream, sys_stream, speech_stream)
+            (ai, media_stream, sys_stream, speech_stream)
         };
         Self {
             inner: Arc::new(Mutex::new(AndroidAutoInner {
@@ -553,7 +553,10 @@ impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(v) = self.recv.try_recv() {
             match v {
-                MessageFromAsync::VideoData { data, timestamp: _ } => {
+                MessageFromAsync::VideoData {
+                    data,
+                    _timestamp: _,
+                } => {
                     let mut units = openh264::nal_units(&data).peekable();
                     while let Some(p) = units.next() {
                         match self.android_auto_video_decoder.decode(p) {

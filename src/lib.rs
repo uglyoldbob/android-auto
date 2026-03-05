@@ -455,7 +455,7 @@ impl AndroidAutoMessage {
                     data: m,
                 }
             }
-            Self::Audio(timestamp, mut data) => {
+            Self::Audio(_timestamp, mut data) => {
                 let t = Wifi::avchannel_message::Enum::AV_MEDIA_WITH_TIMESTAMP_INDICATION as u16;
                 let t = t.to_be_bytes();
                 let mut m = Vec::new();

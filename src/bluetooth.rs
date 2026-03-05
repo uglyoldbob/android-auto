@@ -1,9 +1,8 @@
 //! Contains bluetooth channel code
 
 use super::{
-    AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoControlMessage,
-    AndroidAutoFrame, ChannelDescriptor, ChannelHandlerTrait, ChannelId, FrameHeader,
-    FrameHeaderContents, FrameHeaderType,
+    AndroidAutoCommonMessage, AndroidAutoConfiguration, AndroidAutoFrame, ChannelDescriptor,
+    ChannelHandlerTrait, ChannelId, FrameHeader, FrameHeaderContents, FrameHeaderType,
 };
 use crate::{AndroidAutoMainTrait, StreamMux, Wifi};
 use protobuf::{EnumOrUnknown, Message};
@@ -15,8 +14,6 @@ pub enum BluetoothMessage {
     PairingRequest(ChannelId, Wifi::BluetoothPairingRequest),
     /// A response to a pairing request
     PairingResponse(ChannelId, Wifi::BluetoothPairingResponse),
-    /// An authentication message of some variety for the bluetooth channel?
-    Auth,
 }
 
 impl From<BluetoothMessage> for AndroidAutoFrame {
@@ -39,7 +36,6 @@ impl From<BluetoothMessage> for AndroidAutoFrame {
                     data: m,
                 }
             }
-            BluetoothMessage::Auth => unimplemented!(),
         }
     }
 }
@@ -114,7 +110,6 @@ impl ChannelHandlerTrait for BluetoothChannelHandler {
         if let Ok(msg2) = msg2 {
             match msg2 {
                 BluetoothMessage::PairingResponse(_, _) => unimplemented!(),
-                BluetoothMessage::Auth => unimplemented!(),
                 BluetoothMessage::PairingRequest(_chan, _m) => {
                     let mut m2 = Wifi::BluetoothPairingResponse::new();
                     m2.set_already_paired(true);
