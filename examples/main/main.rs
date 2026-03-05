@@ -536,10 +536,12 @@ impl AndroidAuto {
             let mut s = self.inner.lock().await;
             s.relay.take()
         };
-        aas.run(config, &mut joinset, self).await?;
+        let a = aas.run(config, &mut joinset, self).await;
+        log::info!("join_all on the android auto joinset");
         joinset.join_all().await;
+        log::info!("Done with join_all");
         relay.map(|r| r.abort());
-        Ok(())
+        a
     }
 }
 
@@ -566,12 +568,14 @@ impl eframe::App for MyEguiApp {
             while let Ok(v) = con.recv.try_recv() {
                 match v {
                     MessageFromAsync::ExitContainer => {
+                        log::info!("Got request to exit container");
                         replace_container = true;
                     }
                     MessageFromAsync::Connected => {
                         log::info!("Connected");
                     }
                     MessageFromAsync::Disconnected => {
+                        log::info!("Android auto disconnected");
                         let _ = self.android_auto_video_decoder.flush_remaining();
                         self.android_auto_texture.take();
                     }
@@ -719,11 +723,6 @@ impl AndroidAutoContainer {
         let thread_handle = std::thread::spawn(move || {
             // 3. Enter the runtime context and run async code within this specific thread
             let r = runtime_builder.block_on(async {
-                println!(
-                    "Tokio runtime is running in a new thread: {:?}",
-                    std::thread::current().name()
-                );
-
                 #[cfg(feature = "wireless")]
                 let wifi = nmrs::NetworkManager::new().await.expect("Wifi not found");
                 #[cfg(feature = "wireless")]

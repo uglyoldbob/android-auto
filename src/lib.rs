@@ -19,7 +19,10 @@ use bluetooth_rust::{
 };
 use futures::StreamExt;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    sync::RwLockReadGuard,
+};
 
 mod avinput;
 use avinput::*;
@@ -615,6 +618,8 @@ mod frame_header {
 }
 use frame_header::FrameHeaderContents;
 
+#[cfg(feature = "wireless")]
+use crate::Bluetooth::Status;
 use crate::protobufmod::Wifi::AVMediaAckIndication;
 
 /// Represents the header of a frame sent to the android auto client
@@ -1410,6 +1415,11 @@ async fn handle_bluetooth_client(
                 Bluetooth::MessageId::BLUETOOTH_SOCKET_INFO_RESPONSE => {
                     let message = Bluetooth::SocketInfoResponse::parse_from_bytes(&message);
                     log::info!("Message is now {:?}", message);
+                    if let Ok(m) = message {
+                        if m.status() == Status::STATUS_SUCCESS {
+                            break;
+                        }
+                    }
                 }
                 _ => {}
             },
@@ -1419,6 +1429,7 @@ async fn handle_bluetooth_client(
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
+    log::info!("Ending bluetooth comms");
     Ok(())
 }
 
@@ -1437,7 +1448,6 @@ async fn bluetooth_service(
             log::info!("Bluetooth client disconnected: {:?}", e);
         }
     }
-    Ok(())
 }
 
 #[cfg(feature = "wireless")]
@@ -1453,21 +1463,17 @@ async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
         network.port
     );
     if let Ok(a) = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", network.port)).await {
-        loop {
-            if let Ok((stream, addr)) = a.accept().await {
-                let config2 = config.clone();
-                let _ = stream.set_nodelay(true);
-                wireless.connect().await;
-                if let Err(e) = handle_client_tcp(stream, config2, wireless.as_ref()).await {
-                    wireless.disconnect().await;
-                    if false {
-                        let mut ch = CHANNEL_HANDLERS.write().await;
-                        ch.clear();
-                    }
-                    log::error!("Disconnect from client: {:?}", e);
-                }
+        log::info!("Starting wifi listener");
+        if let Ok((stream, _addr)) = a.accept().await {
+            let config2 = config.clone();
+            let _ = stream.set_nodelay(true);
+            wireless.connect().await;
+            if let Err(e) = handle_client_tcp(stream, config2, wireless.as_ref()).await {
+                log::error!("Disconnect from client: {:?}", e);
             }
+            wireless.disconnect().await;
         }
+        log::info!("Stopping wifi listener");
         Ok(())
     } else {
         Err(format!("Failed to listen on port {} tcp", network.port))
@@ -1540,13 +1546,16 @@ async fn handle_client_generic<
     let sm = StreamMux::new(reader, writer, ssl_client);
     let message_recv = main.get_receiver().await;
     let sm2 = sm.clone();
+    let kill = tokio::sync::oneshot::channel::<()>();
     let _task2 = if let Some(mut msgr) = message_recv {
         let jh: tokio::task::JoinHandle<Result<(), FrameTransmissionError>> =
             tokio::task::spawn(async move {
                 while let Some(m) = msgr.recv().await {
-                    sm2.write_sendable(m)
-                        .await
-                        .inspect_err(|e| log::error!("Error passing message: {:?}", e))?;
+                    if let Err(e) = sm2.write_sendable(m).await {
+                        log::error!("Error passing message: {:?}", e);
+                        let _ = kill.0.send(());
+                        return Err(e);
+                    }
                 }
                 Ok(())
             });
@@ -1601,6 +1610,29 @@ async fn handle_client_generic<
     let mut fr2 = AndroidAutoFrameReceiver::new();
     let channel_handlers = CHANNEL_HANDLERS.read().await;
     log::debug!("Waiting on first packet from android auto client");
+
+    tokio::select! {
+        a = do_android_auto_loop(fr2, channel_handlers, sm, config, main) => {
+
+        }
+        _ = kill.1 => {
+
+        }
+    }
+    Ok(())
+}
+
+async fn do_android_auto_loop<
+    T: AndroidAutoMainTrait + ?Sized,
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+>(
+    mut fr2: AndroidAutoFrameReceiver,
+    channel_handlers: RwLockReadGuard<'_, Vec<ChannelHandler>>,
+    sm: StreamMux<R, W>,
+    config: AndroidAutoConfiguration,
+    main: &T,
+) -> Result<(), ClientError> {
     loop {
         if let Ok(f) = sm.read_frame(&mut fr2).await {
             if let Some(handler) = channel_handlers.get(f.header.channel_id as usize) {
@@ -1634,6 +1666,7 @@ async fn handle_client_usb<T: AndroidAutoMainTrait + ?Sized>(
     handle_client_generic(stream.0, stream.1, config, main).await
 }
 
+#[cfg(feature = "usb")]
 /// Watch for a usb disconnect message from nusb
 async fn watch_for_disconnect(device_address: nusb::DeviceInfo) {
     let mut watcher = nusb::watch_devices().unwrap();
@@ -1661,6 +1694,7 @@ async fn watch_for_disconnect(device_address: nusb::DeviceInfo) {
     }
 }
 
+#[cfg(feature = "usb")]
 /// Run a single usb device for android auto
 async fn do_usb_iteration<T: AndroidAutoMainTrait + Send + 'static>(
     d: nusb::DeviceInfo,
@@ -1810,16 +1844,21 @@ impl AndroidAutoServer {
             let profile = wireless.setup_bluetooth_profile(&psettings).await?;
             log::info!("Setup bluetooth profile is ok?");
             let wireless2 = wireless.clone();
+            let kill = tokio::sync::oneshot::channel::<()>();
             js.spawn(async move {
-                let e = bluetooth_service(profile, wireless2).await;
-                log::error!("Android auto bluetooth service stopped: {:?}", e);
-                e
+                tokio::select! {
+                    e = bluetooth_service(profile, wireless2) => {
+                        log::error!("Android auto bluetooth service stopped: {:?}", e);
+                        e
+                    }
+                    _ = kill.1 => {
+                        Ok(())
+                    }
+                }
             });
-            js.spawn(async move {
-                let e = wifi_service(config, wireless.clone()).await;
-                log::error!("Android auto wireless service stopped: {:?}", e);
-                e
-            });
+            let e = wifi_service(config, wireless.clone()).await;
+            let _ = kill.0.send(());
+            log::error!("Android auto wireless service stopped: {:?}", e);
         }
         Ok(())
     }
