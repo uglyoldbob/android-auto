@@ -1553,7 +1553,7 @@ async fn handle_client_generic<
     } else {
         None
     };
-
+    log::info!("Sending channel handlers");
     {
         let mut channel_handlers: Vec<ChannelHandler> = Vec::new();
         channel_handlers.push(ControlChannelHandler::new().into());
@@ -1590,6 +1590,7 @@ async fn handle_client_generic<
             ch.append(&mut channel_handlers);
         }
     }
+    log::info!("Sending version request");
     sm.write_frame(AndroidAutoControlMessage::VersionRequest.into())
         .await
         .map_err(|e| {
@@ -1610,6 +1611,7 @@ async fn handle_client_generic<
     }
 }
 
+#[cfg(feature = "wireless")]
 /// Handle a single android auto device for a head unit
 async fn handle_client_tcp<T: AndroidAutoMainTrait + ?Sized>(
     stream: tokio::net::TcpStream,
@@ -1643,44 +1645,74 @@ impl AndroidAutoServer {
         #[cfg(feature = "usb")]
         {
             if main.supports_wired().is_some() {
-                if let Ok(devs) = nusb::list_devices().await {
-                    for dev in devs {
-                        if usb::is_android_device(&dev) {
-                            log::info!("USB DEVICE {:#?}", dev);
-                            log::info!("ANDROID DEVICE");
-                            let mut go = false;
-                            match dev.open().await {
-                                Ok(d) => {
-                                    let aoa = usb::get_aoa_protocol(&d).await;
-                                    log::info!("AOA is {:?}", aoa);
-                                    usb::identify_accessory(&d).await;
-                                    usb::accessory_start(&d).await;
-                                    go = true;
+                if let Ok(mut watcher) = nusb::watch_devices() {
+                    js.spawn(async move {
+                        use futures::StreamExt;
+                        loop {
+                            log::info!("Looking for usb devices");
+                            if let Ok(devs) = nusb::list_devices().await {
+                                let mut start_device = None;
+                                for dev in devs {
+                                    if usb::is_android_device(&dev) {
+                                        start_device = Some(dev);
+                                    }
                                 }
-                                Err(e) => {
-                                    log::error!("Failed to open android device {e}");
-                                }
-                            }
-                            if go {
-                                match usb::wait_for_accessory().await {
-                                    Ok(newdev) => {
-                                        log::info!("AOA DEV IS {:?}", newdev);
-                                        let aoa = usb::claim_aoa_interface(&newdev).await;
-                                        let aauto = usb::AndroidAutoUsb::new(aoa);
-                                        if let Some(aauto) = aauto {
-                                            log::info!("got aoa interface?");
-                                            let a = handle_client_usb(aauto, config.clone(), &main)
-                                                .await;
-                                            log::info!("handled usb client: {:?}", a);
+                                let d = if let Some(d) = start_device {
+                                    log::info!("Startup device {:?}", d);
+                                    d
+                                } else {
+                                    let device = loop {
+                                        if let Some(dev) = watcher.next().await {
+                                            use nusb::hotplug::HotplugEvent;
+                                            if let HotplugEvent::Connected(di) = dev {
+                                                if usb::is_android_device(&di) {
+                                                    log::info!("Hotplug device {:?}", di);
+                                                    tokio::time::sleep(
+                                                        std::time::Duration::from_millis(500),
+                                                    )
+                                                    .await;
+                                                    break di;
+                                                }
+                                            }
                                         }
+                                    };
+                                    device
+                                };
+                                let mut go = false;
+                                match d.open().await {
+                                    Ok(d) => {
+                                        let aoa = usb::get_aoa_protocol(&d).await;
+                                        log::info!("AOA is {:?}", aoa);
+                                        usb::identify_accessory(&d).await;
+                                        usb::accessory_start(&d).await;
+                                        go = true;
                                     }
                                     Err(e) => {
-                                        log::error!("Failed to get accessory {e}");
+                                        log::error!("Failed to open android device {e}");
+                                    }
+                                }
+                                if go {
+                                    match usb::wait_for_accessory().await {
+                                        Ok(newdev) => {
+                                            log::info!("AOA DEV IS {:?}", newdev);
+                                            let aoa = usb::claim_aoa_interface(&newdev).await;
+                                            let aauto = usb::AndroidAutoUsb::new(aoa);
+                                            if let Some(aauto) = aauto {
+                                                log::info!("got aoa interface?");
+                                                let a =
+                                                    handle_client_usb(aauto, config.clone(), &main)
+                                                        .await;
+                                                log::info!("handled usb client: {:?}", a);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to get accessory {e}");
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
+                    });
                 }
             }
         }
