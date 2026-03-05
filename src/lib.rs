@@ -17,6 +17,7 @@ use Wifi::ChannelDescriptor;
 use bluetooth_rust::{
     BluetoothRfcommConnectableTrait, BluetoothRfcommProfileTrait, BluetoothStream,
 };
+use futures::StreamExt;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -1633,6 +1634,106 @@ async fn handle_client_usb<T: AndroidAutoMainTrait + ?Sized>(
     handle_client_generic(stream.0, stream.1, config, main).await
 }
 
+/// Watch for a usb disconnect message from nusb
+async fn watch_for_disconnect(device_address: nusb::DeviceInfo) {
+    let mut watcher = nusb::watch_devices().unwrap();
+    while let Some(event) = watcher.next().await {
+        match event {
+            nusb::hotplug::HotplugEvent::Disconnected(info) => {
+                let devs = nusb::list_devices().await;
+                if let Ok(mut devs) = devs {
+                    if devs
+                        .find(|a| {
+                            a.busnum() == device_address.busnum()
+                                && a.device_address() == device_address.device_address()
+                        })
+                        .is_none()
+                    {
+                        log::info!("Android Auto USB device disconnected");
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Run a single usb device for android auto
+async fn do_usb_iteration<T: AndroidAutoMainTrait + Send + 'static>(
+    d: nusb::DeviceInfo,
+    config: &AndroidAutoConfiguration,
+    main: &T,
+) -> Result<(), ()> {
+    match d.open().await {
+        Ok(d) => {
+            let aoa = usb::get_aoa_protocol(&d).await;
+            log::info!("AOA is {:?}", aoa);
+            usb::identify_accessory(&d).await;
+            usb::accessory_start(&d).await;
+        }
+        Err(e) => {
+            log::error!("Failed to open android device {e}");
+            return Err(());
+        }
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(2000),
+        usb::wait_for_accessory(),
+    )
+    .await
+    {
+        Ok(Ok(newdev)) => {
+            let _ = newdev.reset().await;
+        }
+        Ok(Err(e)) => {
+            log::error!("Failed to get accessory {e}");
+            return Err(());
+        }
+        Err(_e) => {
+            log::error!("Timeout get accessory");
+            return Err(());
+        }
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(2000),
+        usb::wait_for_accessory(),
+    )
+    .await
+    {
+        Ok(Ok(newdev)) => {
+            log::info!("AOA DEV IS {:?}", newdev);
+            let aoa = usb::claim_aoa_interface(&newdev).await;
+            let aauto = usb::AndroidAutoUsb::new(aoa);
+            if let Some(aauto) = aauto {
+                log::info!("got aoa interface?");
+                tokio::select! {
+                    a = handle_client_usb(aauto, config.clone(), main) => {
+                        log::info!("handled usb client: {:?}", a);
+                    }
+                    _ = watch_for_disconnect(d) => {
+                        log::info!("USB DISCONNECTED");
+                    }
+                }
+                main.disconnect().await;
+                Ok(())
+            } else {
+                Err(())
+            }
+        }
+        Ok(Err(e)) => {
+            log::error!("Failed to get accessory 2 {e}");
+            Err(())
+        }
+        Err(_e) => {
+            log::error!("Timeout get accessory 2");
+            return Err(());
+        }
+    }
+}
+
 impl AndroidAutoServer {
     /// Runs the android auto server
     pub async fn run<T: AndroidAutoMainTrait + Send + 'static>(
@@ -1648,70 +1749,38 @@ impl AndroidAutoServer {
                 if let Ok(mut watcher) = nusb::watch_devices() {
                     js.spawn(async move {
                         use futures::StreamExt;
-                        loop {
-                            log::info!("Looking for usb devices");
-                            if let Ok(devs) = nusb::list_devices().await {
-                                let mut start_device = None;
-                                for dev in devs {
-                                    if usb::is_android_device(&dev) {
-                                        start_device = Some(dev);
-                                    }
-                                }
-                                let d = if let Some(d) = start_device {
-                                    log::info!("Startup device {:?}", d);
-                                    d
-                                } else {
-                                    let device = loop {
-                                        if let Some(dev) = watcher.next().await {
-                                            use nusb::hotplug::HotplugEvent;
-                                            if let HotplugEvent::Connected(di) = dev {
-                                                if usb::is_android_device(&di) {
-                                                    log::info!("Hotplug device {:?}", di);
-                                                    tokio::time::sleep(
-                                                        std::time::Duration::from_millis(500),
-                                                    )
-                                                    .await;
-                                                    break di;
-                                                }
-                                            }
-                                        }
-                                    };
-                                    device
-                                };
-                                let mut go = false;
-                                match d.open().await {
-                                    Ok(d) => {
-                                        let aoa = usb::get_aoa_protocol(&d).await;
-                                        log::info!("AOA is {:?}", aoa);
-                                        usb::identify_accessory(&d).await;
-                                        usb::accessory_start(&d).await;
-                                        go = true;
-                                    }
-                                    Err(e) => {
-                                        log::error!("Failed to open android device {e}");
-                                    }
-                                }
-                                if go {
-                                    match usb::wait_for_accessory().await {
-                                        Ok(newdev) => {
-                                            log::info!("AOA DEV IS {:?}", newdev);
-                                            let aoa = usb::claim_aoa_interface(&newdev).await;
-                                            let aauto = usb::AndroidAutoUsb::new(aoa);
-                                            if let Some(aauto) = aauto {
-                                                log::info!("got aoa interface?");
-                                                let a =
-                                                    handle_client_usb(aauto, config.clone(), &main)
-                                                        .await;
-                                                log::info!("handled usb client: {:?}", a);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            log::error!("Failed to get accessory {e}");
-                                        }
-                                    }
+                        log::info!("Looking for usb devices");
+                        if let Ok(devs) = nusb::list_devices().await {
+                            let mut start_device = None;
+                            for dev in devs {
+                                if usb::is_android_device(&dev) {
+                                    start_device = Some(dev);
                                 }
                             }
+                            let d = if let Some(d) = start_device {
+                                log::info!("Startup device {:?}", d);
+                                d
+                            } else {
+                                let device = loop {
+                                    if let Some(dev) = watcher.next().await {
+                                        use nusb::hotplug::HotplugEvent;
+                                        if let HotplugEvent::Connected(di) = dev {
+                                            if usb::is_android_device(&di) {
+                                                log::info!("Hotplug device {:?}", di);
+                                                tokio::time::sleep(
+                                                    std::time::Duration::from_millis(500),
+                                                )
+                                                .await;
+                                                break di;
+                                            }
+                                        }
+                                    }
+                                };
+                                device
+                            };
+                            let _ = do_usb_iteration(d, &config, &main).await;
                         }
+                        Ok(())
                     });
                 }
             }

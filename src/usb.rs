@@ -1,5 +1,3 @@
-use nusb::transfer::EndpointType;
-
 #[repr(u16)]
 enum AoaStringIndex {
     Manufacturer = 0,

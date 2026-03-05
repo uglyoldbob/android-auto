@@ -29,6 +29,7 @@ async fn get_wifi_interface(nmrs: &nmrs::NetworkManager) -> Option<nmrs::Device>
 type AudioProducer = ringbuf::HeapProd<i16>;
 
 struct AndroidAutoInner {
+    relay: Option<tokio::task::JoinHandle<()>>,
     connected: bool,
     send: tokio::sync::mpsc::Sender<MessageFromAsync>,
     arecv: Option<tokio::sync::mpsc::Receiver<android_auto::SendableAndroidAutoMessage>>,
@@ -80,6 +81,9 @@ enum MessageFromAsync {
         data: Vec<u8>,
         _timestamp: Option<u64>,
     },
+    Connected,
+    Disconnected,
+    ExitContainer,
 }
 
 enum MessageToAsync {
@@ -292,12 +296,14 @@ impl android_auto::AndroidAutoWiredTrait for AndroidAuto {}
 impl android_auto::AndroidAutoMainTrait for AndroidAuto {
     async fn connect(&self) {
         let mut i = self.inner.lock().await;
+        let _ = i.send.send(MessageFromAsync::Connected).await;
         i.connected = true;
     }
 
     async fn disconnect(&self) {
-        let mut i = self.inner.lock().await;
-        i.connected = false;
+        let mut s = self.inner.lock().await;
+        let _ = s.send.send(MessageFromAsync::Disconnected).await;
+        s.connected = false;
     }
 
     async fn get_receiver(
@@ -337,12 +343,16 @@ impl AndroidAuto {
         s.insert(android_auto::Wifi::sensor_type::Enum::DRIVING_STATUS);
         s.insert(android_auto::Wifi::sensor_type::Enum::NIGHT_DATA);
         let android_send2 = android_send.clone();
-        tokio::spawn(async move {
-            loop {
+        let relay = tokio::spawn(async move {
+            'main_loop: loop {
                 while let Some(m) = recv.recv().await {
                     match m {
                         MessageToAsync::AndroidAutoMessage(android_auto_message) => {
-                            let _ = android_send2.send(android_auto_message).await;
+                            let a = android_send2.send(android_auto_message).await;
+                            if let Err(e) = a {
+                                log::error!("Error relaying info {e:?}");
+                                break 'main_loop;
+                            }
                         }
                     }
                 }
@@ -484,6 +494,7 @@ impl AndroidAuto {
         };
         Self {
             inner: Arc::new(Mutex::new(AndroidAutoInner {
+                relay: Some(relay),
                 connected: false,
                 send,
                 arecv: Some(android_recv),
@@ -521,88 +532,105 @@ impl AndroidAuto {
     ) -> Result<(), String> {
         let aas = android_auto::AndroidAutoServer::new().await;
         let mut joinset = tokio::task::JoinSet::new();
+        let relay = {
+            let mut s = self.inner.lock().await;
+            s.relay.take()
+        };
         aas.run(config, &mut joinset, self).await?;
         joinset.join_all().await;
+        relay.map(|r| r.abort());
         Ok(())
     }
 }
 
 struct MyEguiApp {
-    recv: tokio::sync::mpsc::Receiver<MessageFromAsync>,
-    send: tokio::sync::mpsc::Sender<MessageToAsync>,
     android_auto_video_decoder: openh264::decoder::Decoder,
     android_auto_texture: Option<egui::TextureHandle>,
+    container: Option<AndroidAutoContainer>,
 }
 
 impl MyEguiApp {
-    fn new(
-        _cc: &eframe::CreationContext<'_>,
-        recv: tokio::sync::mpsc::Receiver<MessageFromAsync>,
-        send: tokio::sync::mpsc::Sender<MessageToAsync>,
-    ) -> Self {
+    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         Self {
-            recv,
-            send,
             android_auto_video_decoder: openh264::decoder::Decoder::new().unwrap(),
             android_auto_texture: None,
+            container: Some(AndroidAutoContainer::new()),
         }
     }
 }
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        while let Ok(v) = self.recv.try_recv() {
-            match v {
-                MessageFromAsync::VideoData {
-                    data,
-                    _timestamp: _,
-                } => {
-                    let mut units = openh264::nal_units(&data).peekable();
-                    while let Some(p) = units.next() {
-                        match self.android_auto_video_decoder.decode(p) {
-                            Err(e) => {
-                                log::error!("Failed to decode android auto video {:?}", e);
-                            }
-                            Ok(Some(image)) => {
-                                use openh264::formats::YUVSource;
-                                let rgb_len = image.rgb8_len();
-                                let mut rgb_raw = vec![0; rgb_len];
-                                image.write_rgb8(&mut rgb_raw);
-                                let (w, h) = image.dimensions_uv();
-                                let pixels: Vec<egui::Color32> = rgb_raw
-                                    .chunks_exact(3)
-                                    .map(|i| egui::Color32::from_rgb(i[0], i[1], i[2]))
-                                    .collect();
-                                let image = egui::ColorImage {
-                                    source_size: egui::Vec2 {
-                                        x: w as f32 * 2.0,
-                                        y: h as f32 * 2.0,
-                                    },
-                                    size: [w * 2usize, h * 2usize],
-                                    pixels,
-                                };
-                                if self.android_auto_texture.is_none() {
-                                    self.android_auto_texture = Some(ctx.load_texture(
-                                        "android_auto",
-                                        image,
-                                        egui::TextureOptions::LINEAR,
-                                    ));
-                                } else if let Some(t) = &mut self.android_auto_texture {
-                                    t.set_partial([0, 0], image, egui::TextureOptions::LINEAR);
+        let mut replace_container = false;
+        if let Some(con) = &mut self.container {
+            while let Ok(v) = con.recv.try_recv() {
+                match v {
+                    MessageFromAsync::ExitContainer => {
+                        replace_container = true;
+                    }
+                    MessageFromAsync::Connected => {
+                        log::info!("Connected");
+                    }
+                    MessageFromAsync::Disconnected => {
+                        let _ = self.android_auto_video_decoder.flush_remaining();
+                        self.android_auto_texture.take();
+                    }
+                    MessageFromAsync::VideoData {
+                        data,
+                        _timestamp: _,
+                    } => {
+                        let mut units = openh264::nal_units(&data).peekable();
+                        while let Some(p) = units.next() {
+                            match self.android_auto_video_decoder.decode(p) {
+                                Err(e) => {
+                                    log::error!("Failed to decode android auto video {:?}", e);
                                 }
+                                Ok(Some(image)) => {
+                                    use openh264::formats::YUVSource;
+                                    let rgb_len = image.rgb8_len();
+                                    let mut rgb_raw = vec![0; rgb_len];
+                                    image.write_rgb8(&mut rgb_raw);
+                                    let (w, h) = image.dimensions_uv();
+                                    let pixels: Vec<egui::Color32> = rgb_raw
+                                        .chunks_exact(3)
+                                        .map(|i| egui::Color32::from_rgb(i[0], i[1], i[2]))
+                                        .collect();
+                                    let image = egui::ColorImage {
+                                        source_size: egui::Vec2 {
+                                            x: w as f32 * 2.0,
+                                            y: h as f32 * 2.0,
+                                        },
+                                        size: [w * 2usize, h * 2usize],
+                                        pixels,
+                                    };
+                                    if self.android_auto_texture.is_none() {
+                                        self.android_auto_texture = Some(ctx.load_texture(
+                                            "android_auto",
+                                            image,
+                                            egui::TextureOptions::LINEAR,
+                                        ));
+                                    } else if let Some(t) = &mut self.android_auto_texture {
+                                        t.set_partial([0, 0], image, egui::TextureOptions::LINEAR);
+                                    }
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                 }
             }
         }
+        if replace_container {
+            self.container = Some(AndroidAutoContainer::new());
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             let size = ui.available_size();
             if let Some(t) = &self.android_auto_texture {
                 ctx.request_repaint();
-                let isize = t.size()[1];
-                let zoom = isize as f32 / size.y;
+                let isize = t.size();
+                let zoom = isize[1] as f32 / size.y;
+                let zoom2 = isize[0] as f32 / size.x;
+                let zoom = zoom.max(zoom2);
                 let dsize = t.size_vec2() / zoom;
                 let p = ui.cursor();
                 let r = ui.add(
@@ -655,13 +683,186 @@ impl eframe::App for MyEguiApp {
                     if do_touch {
                         i_event.touch_event = android_auto::protobuf::MessageField::some(te);
                         let e = android_auto::AndroidAutoMessage::Input(i_event);
-                        let _ = self
-                            .send
-                            .blocking_send(MessageToAsync::AndroidAutoMessage(e.sendable()));
+                        if let Some(con) = &mut self.container {
+                            let a = con
+                                .send
+                                .blocking_send(MessageToAsync::AndroidAutoMessage(e.sendable()));
+                            if let Err(e) = a {
+                                log::error!("Error sending touch event {:?}", e);
+                            }
+                        }
                     }
                 }
             }
         });
+    }
+}
+
+struct AndroidAutoContainer {
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+    recv: tokio::sync::mpsc::Receiver<MessageFromAsync>,
+    send: tokio::sync::mpsc::Sender<MessageToAsync>,
+    kill: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl AndroidAutoContainer {
+    fn new() -> Self {
+        let to_async = tokio::sync::mpsc::channel(50);
+        let from_async = tokio::sync::mpsc::channel(50);
+        let kill = tokio::sync::oneshot::channel::<()>();
+
+        let runtime_builder = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build the Tokio runtime");
+        let send_exit = from_async.0.clone();
+        let thread_handle = std::thread::spawn(move || {
+            // 3. Enter the runtime context and run async code within this specific thread
+            let r = runtime_builder.block_on(async {
+                println!(
+                    "Tokio runtime is running in a new thread: {:?}",
+                    std::thread::current().name()
+                );
+
+                #[cfg(feature = "wireless")]
+                let wifi = nmrs::NetworkManager::new().await.expect("Wifi not found");
+                #[cfg(feature = "wireless")]
+                let wifi_dev = get_wifi_interface(&wifi)
+                    .await
+                    .expect("No wifi device found");
+
+                #[cfg(feature = "wireless")]
+                let hotspot_ssid = "Hotspot".to_string();
+                #[cfg(feature = "wireless")]
+                let hotspot_psk = "qwertyuiop".to_string();
+                #[cfg(feature = "wireless")]
+                nmrs_extensions::start_hotspot(
+                    hotspot_ssid.clone(),
+                    hotspot_psk.clone(),
+                    &wifi_dev.path,
+                )
+                .await
+                .expect("Failed to build wifi hotspot");
+
+                #[cfg(feature = "wireless")]
+                let (mut bluechan, bluetooth) = {
+                    let bluechan = tokio::sync::mpsc::channel(5);
+                    let mut bluetooth = bluetooth_rust::BluetoothAdapterBuilder::new();
+                    bluetooth.with_sender(bluechan.0);
+                    let bluetooth =
+                        Arc::new(bluetooth.build().await.expect("Could not open bluetooth"));
+                    (bluechan.1, bluetooth)
+                };
+                #[cfg(feature = "wireless")]
+                bluetooth
+                    .set_discoverable(true)
+                    .await
+                    .expect("Failed to make bluetooth discoverable");
+
+                #[cfg(feature = "wireless")]
+                tokio::spawn(async move {
+                    loop {
+                        if let Some(m) = bluechan.recv().await {
+                            match m {
+                                MessageToBluetoothHost::DisplayPasskey(a, sender) => {
+                                    log::info!("Passkey is {}", a);
+                                    let _ =
+                                        sender.send(bluetooth_rust::ResponseToPasskey::Yes).await;
+                                }
+                                MessageToBluetoothHost::ConfirmPasskey(a, sender) => {
+                                    log::info!("Passkey is confirmed {}", a);
+                                    let _ =
+                                        sender.send(bluetooth_rust::ResponseToPasskey::Yes).await;
+                                }
+                                MessageToBluetoothHost::CancelDisplayPasskey => {
+                                    log::info!("Cancel show passkey");
+                                }
+                            }
+                        }
+                    }
+                });
+
+                #[cfg(feature = "wireless")]
+                let blue_addresses: Vec<[u8; 6]> = bluetooth.addresses().await;
+                #[cfg(feature = "wireless")]
+                let bluetooth_address = blue_addresses
+                    .first()
+                    .map(|b| {
+                        let a = format!(
+                            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                            b[0], b[1], b[2], b[3], b[4], b[5]
+                        );
+                        a
+                    })
+                    .expect("No bluetooth hardware found");
+
+                let aauto = tokio::sync::mpsc::channel(50);
+
+                let aa = AndroidAuto::new(
+                    to_async.1,
+                    from_async.0,
+                    #[cfg(feature = "wireless")]
+                    bluetooth,
+                    #[cfg(feature = "wireless")]
+                    bluetooth_address,
+                    #[cfg(feature = "wireless")]
+                    android_auto::NetworkInformation {
+                        ssid: hotspot_ssid,
+                        psk: hotspot_psk,
+                        mac_addr: wifi_dev.identity.current_mac.clone(),
+                        ip: "10.42.0.1".to_string(),
+                        port: 5277,
+                        security_mode: android_auto::Bluetooth::SecurityMode::WPA2_PERSONAL,
+                        ap_type: android_auto::Bluetooth::AccessPointType::STATIC,
+                    },
+                    aauto.1,
+                    aauto.0,
+                );
+                let config = android_auto::AndroidAutoConfiguration {
+                    unit: HeadUnitInfo {
+                        name: "Example".to_string(),
+                        car_model: "Example".to_string(),
+                        car_year: "1943".to_string(),
+                        car_serial: "42".to_string(),
+                        left_hand: false,
+                        head_manufacturer: "Example".to_string(),
+                        head_model: "Example".to_string(),
+                        sw_build: "37".to_string(),
+                        sw_version: "1.2.3".to_string(),
+                        native_media: true,
+                        hide_clock: Some(true),
+                    },
+                    custom_certificate: None,
+                };
+                tokio::select! {
+                    _ = aa.start_android_auto(config) => {
+                        log::info!("android auto exited");
+                    }
+                    _ = kill.1 => {
+                        log::info!("Killing the android auto container");
+                    }
+                }
+                Ok::<(), String>(())
+            });
+            log::info!("Exiting the android auto container thread");
+            send_exit
+                .blocking_send(MessageFromAsync::ExitContainer)
+                .map_err(|e| e.to_string())?;
+            r
+        });
+        Self {
+            thread: Some(thread_handle),
+            recv: from_async.1,
+            send: to_async.0,
+            kill: Some(kill.0),
+        }
+    }
+}
+
+impl Drop for AndroidAutoContainer {
+    fn drop(&mut self) {
+        let _ = self.kill.take().map(|s| s.send(()));
+        self.thread.take().map(|t| t.join());
     }
 }
 
@@ -672,141 +873,12 @@ fn main() -> Result<(), u32> {
         .unwrap();
     let native_options = eframe::NativeOptions::default();
 
-    let runtime_builder = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to build the Tokio runtime");
-
-    let to_async = tokio::sync::mpsc::channel(50);
-    let from_async = tokio::sync::mpsc::channel(50);
-
     android_auto::setup();
-
-    let _thread_handle = std::thread::spawn(move || {
-        // 3. Enter the runtime context and run async code within this specific thread
-        runtime_builder.block_on(async {
-            println!(
-                "Tokio runtime is running in a new thread: {:?}",
-                std::thread::current().name()
-            );
-
-            #[cfg(feature = "wireless")]
-            let wifi = nmrs::NetworkManager::new().await.expect("Wifi not found");
-            #[cfg(feature = "wireless")]
-            let wifi_dev = get_wifi_interface(&wifi)
-                .await
-                .expect("No wifi device found");
-
-            #[cfg(feature = "wireless")]
-            let hotspot_ssid = "Hotspot".to_string();
-            #[cfg(feature = "wireless")]
-            let hotspot_psk = "qwertyuiop".to_string();
-            #[cfg(feature = "wireless")]
-            nmrs_extensions::start_hotspot(
-                hotspot_ssid.clone(),
-                hotspot_psk.clone(),
-                &wifi_dev.path,
-            )
-            .await
-            .expect("Failed to build wifi hotspot");
-
-            #[cfg(feature = "wireless")]
-            let (mut bluechan, bluetooth) = {
-                let bluechan = tokio::sync::mpsc::channel(5);
-                let mut bluetooth = bluetooth_rust::BluetoothAdapterBuilder::new();
-                bluetooth.with_sender(bluechan.0);
-                let bluetooth =
-                    Arc::new(bluetooth.build().await.expect("Could not open bluetooth"));
-                (bluechan.1, bluetooth)
-            };
-            #[cfg(feature = "wireless")]
-            bluetooth
-                .set_discoverable(true)
-                .await
-                .expect("Failed to make bluetooth discoverable");
-
-            #[cfg(feature = "wireless")]
-            tokio::spawn(async move {
-                loop {
-                    if let Some(m) = bluechan.recv().await {
-                        match m {
-                            MessageToBluetoothHost::DisplayPasskey(a, sender) => {
-                                log::info!("Passkey is {}", a);
-                                let _ = sender.send(bluetooth_rust::ResponseToPasskey::Yes).await;
-                            }
-                            MessageToBluetoothHost::ConfirmPasskey(a, sender) => {
-                                log::info!("Passkey is confirmed {}", a);
-                                let _ = sender.send(bluetooth_rust::ResponseToPasskey::Yes).await;
-                            }
-                            MessageToBluetoothHost::CancelDisplayPasskey => {
-                                log::info!("Cancel show passkey");
-                            }
-                        }
-                    }
-                }
-            });
-
-            #[cfg(feature = "wireless")]
-            let blue_addresses: Vec<[u8; 6]> = bluetooth.addresses().await;
-            #[cfg(feature = "wireless")]
-            let bluetooth_address = blue_addresses
-                .first()
-                .map(|b| {
-                    let a = format!(
-                        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-                        b[0], b[1], b[2], b[3], b[4], b[5]
-                    );
-                    a
-                })
-                .expect("No bluetooth hardware found");
-
-            let aauto = tokio::sync::mpsc::channel(50);
-
-            let aa = AndroidAuto::new(
-                to_async.1,
-                from_async.0,
-                #[cfg(feature = "wireless")]
-                bluetooth,
-                #[cfg(feature = "wireless")]
-                bluetooth_address,
-                #[cfg(feature = "wireless")]
-                android_auto::NetworkInformation {
-                    ssid: hotspot_ssid,
-                    psk: hotspot_psk,
-                    mac_addr: wifi_dev.identity.current_mac.clone(),
-                    ip: "10.42.0.1".to_string(),
-                    port: 5277,
-                    security_mode: android_auto::Bluetooth::SecurityMode::WPA2_PERSONAL,
-                    ap_type: android_auto::Bluetooth::AccessPointType::STATIC,
-                },
-                aauto.1,
-                aauto.0,
-            );
-            let config = android_auto::AndroidAutoConfiguration {
-                unit: HeadUnitInfo {
-                    name: "Example".to_string(),
-                    car_model: "Example".to_string(),
-                    car_year: "1943".to_string(),
-                    car_serial: "42".to_string(),
-                    left_hand: false,
-                    head_manufacturer: "Example".to_string(),
-                    head_model: "Example".to_string(),
-                    sw_build: "37".to_string(),
-                    sw_version: "1.2.3".to_string(),
-                    native_media: true,
-                    hide_clock: Some(true),
-                },
-                custom_certificate: None,
-            };
-            aa.start_android_auto(config).await?;
-            Ok::<(), String>(())
-        })
-    });
 
     let _ = eframe::run_native(
         "Android auto demo",
         native_options,
-        Box::new(move |cc| Ok(Box::new(MyEguiApp::new(cc, from_async.1, to_async.0)))),
+        Box::new(move |cc| Ok(Box::new(MyEguiApp::new(cc)))),
     );
     Ok(())
 }
