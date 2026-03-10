@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "android-auto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
