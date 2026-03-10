@@ -326,6 +326,10 @@ pub trait AndroidAutoMainTrait:
                         log::info!("usb iteration returned {:?}", a);
                     }
                 }
+            } else {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                }
             }
         }
         #[cfg(not(feature = "usb"))]
@@ -383,6 +387,10 @@ pub trait AndroidAutoMainTrait:
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     }
+                }
+            } else {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                 }
             }
         }
