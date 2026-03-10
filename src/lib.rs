@@ -322,7 +322,8 @@ pub trait AndroidAutoMainTrait:
                             };
                             device
                         };
-                        let _ = self.do_usb_iteration(d, config).await;
+                        let a = self.do_usb_iteration(d, config).await;
+                        log::info!("usb iteration returned {:?}", a);
                     }
                 }
             }
@@ -336,46 +337,52 @@ pub trait AndroidAutoMainTrait:
     }
 
     /// does a wifi run
-    async fn wifi_run(&self) {
+    async fn wifi_run(&self, config: &AndroidAutoConfiguration) {
         #[cfg(feature = "wireless")]
         {
-            if main.supports_wired().is_some() {
-                if let Ok(mut watcher) = nusb::watch_devices() {
-                    js.spawn(async move {
-                        use futures::StreamExt;
-                        log::info!("Looking for usb devices");
-                        if let Ok(devs) = nusb::list_devices().await {
-                            let mut start_device = None;
-                            for dev in devs {
-                                if usb::is_android_device(&dev) {
-                                    start_device = Some(dev);
-                                }
+            if let Some(wireless) = self.supports_wireless() {
+                let psettings = bluetooth_rust::BluetoothRfcommProfileSettings {
+                    uuid: bluetooth_rust::BluetoothUuid::AndroidAuto
+                        .as_str()
+                        .to_string(),
+                    name: Some("Android Auto Bluetooth Service".to_string()),
+                    service_uuid: Some(
+                        bluetooth_rust::BluetoothUuid::AndroidAuto
+                            .as_str()
+                            .to_string(),
+                    ),
+                    channel: Some(22),
+                    psm: None,
+                    authenticate: Some(true),
+                    authorize: Some(true),
+                    auto_connect: Some(true),
+                    sdp_record: None,
+                    sdp_version: None,
+                    sdp_features: None,
+                };
+
+                if let Ok(profile) = wireless.setup_bluetooth_profile(&psettings).await {
+                    log::info!("Setup bluetooth profile is ok?");
+                    let wireless2 = wireless.clone();
+                    let kill = tokio::sync::oneshot::channel::<()>();
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            e = bluetooth_service(profile, wireless2) => {
+                                log::error!("Android auto bluetooth service stopped: {:?}", e);
+                                e
                             }
-                            let d = if let Some(d) = start_device {
-                                log::info!("Startup device {:?}", d);
-                                d
-                            } else {
-                                let device = loop {
-                                    if let Some(dev) = watcher.next().await {
-                                        use nusb::hotplug::HotplugEvent;
-                                        if let HotplugEvent::Connected(di) = dev {
-                                            if usb::is_android_device(&di) {
-                                                log::info!("Hotplug device {:?}", di);
-                                                tokio::time::sleep(
-                                                    std::time::Duration::from_millis(500),
-                                                )
-                                                .await;
-                                                break di;
-                                            }
-                                        }
-                                    }
-                                };
-                                device
-                            };
-                            let _ = main.do_usb_iteration(d, &config).await;
+                            _ = kill.1 => {
+                                Ok(())
+                            }
                         }
-                        Ok(())
                     });
+                    let e = wifi_service(config, wireless.clone()).await;
+                    let _ = kill.0.send(());
+                    log::error!("Android auto wireless service stopped: {:?}", e);
+                } else {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    }
                 }
             }
         }
@@ -397,8 +404,12 @@ pub trait AndroidAutoMainTrait:
         log::info!("Running android auto server");
 
         tokio::select! {
-            a = main.usb_run(&config) => {}
-            b = main.wifi_run() => {}
+            _a = main.usb_run(&config) => {
+                log::error!("usb run finished");
+            }
+            _b = main.wifi_run(&config) => {
+                log::error!("wifi config finished");
+            }
         }
         Ok(())
     }
@@ -1642,7 +1653,7 @@ async fn bluetooth_service(
 #[cfg(feature = "wireless")]
 /// Runs the wifi service for android auto
 async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
-    config: AndroidAutoConfiguration,
+    config: &AndroidAutoConfiguration,
     wireless: Arc<T>,
 ) -> Result<(), String> {
     let network = wireless.get_wifi_details();
