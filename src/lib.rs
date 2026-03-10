@@ -261,6 +261,7 @@ pub trait AndroidAutoMainTrait:
                 let aauto = usb::AndroidAutoUsb::new(aoa);
                 if let Some(aauto) = aauto {
                     log::info!("got aoa interface?");
+                    main.connect().await;
                     tokio::select! {
                         a = handle_client_usb(aauto, config.clone(), main) => {
                             log::info!("handled usb client: {:?}", a);
