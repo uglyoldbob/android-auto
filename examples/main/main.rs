@@ -530,13 +530,14 @@ impl AndroidAuto {
         self,
         config: android_auto::AndroidAutoConfiguration,
     ) -> Result<(), String> {
-        let aas = android_auto::AndroidAutoServer::new().await;
         let mut joinset = tokio::task::JoinSet::new();
         let relay = {
             let mut s = self.inner.lock().await;
             s.relay.take()
         };
-        let a = aas.run(config, &mut joinset, self).await;
+        use android_auto::AndroidAutoMainTrait;
+        let b = Box::new(self);
+        let a = b.run(config, &mut joinset).await;
         log::info!("join_all on the android auto joinset");
         joinset.join_all().await;
         log::info!("Done with join_all");

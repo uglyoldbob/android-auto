@@ -210,6 +210,198 @@ pub trait AndroidAutoMainTrait:
     /// Retrieve the receiver so that the user can send messages to the android auto compatible device or crate
     async fn get_receiver(&self)
     -> Option<tokio::sync::mpsc::Receiver<SendableAndroidAutoMessage>>;
+
+    #[cfg(feature = "usb")]
+    /// Run a single usb device for android auto
+    async fn do_usb_iteration(
+        &self,
+        d: nusb::DeviceInfo,
+        config: &AndroidAutoConfiguration,
+    ) -> Result<(), ()> {
+        let main = self;
+        match d.open().await {
+            Ok(d) => {
+                let aoa = usb::get_aoa_protocol(&d).await;
+                log::info!("AOA is {:?}", aoa);
+                usb::identify_accessory(&d).await;
+                usb::accessory_start(&d).await;
+            }
+            Err(e) => {
+                log::error!("Failed to open android device {e}");
+                return Err(());
+            }
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(2000),
+            usb::wait_for_accessory(),
+        )
+        .await
+        {
+            Ok(Ok(newdev)) => {
+                let _ = newdev.reset().await;
+            }
+            Ok(Err(e)) => {
+                log::error!("Failed to get accessory {e}");
+                return Err(());
+            }
+            Err(_e) => {
+                log::error!("Timeout get accessory");
+                return Err(());
+            }
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(2000),
+            usb::wait_for_accessory(),
+        )
+        .await
+        {
+            Ok(Ok(newdev)) => {
+                log::info!("AOA DEV IS {:?}", newdev);
+                let aoa = usb::claim_aoa_interface(&newdev).await;
+                let aauto = usb::AndroidAutoUsb::new(aoa);
+                if let Some(aauto) = aauto {
+                    log::info!("got aoa interface?");
+                    tokio::select! {
+                        a = handle_client_usb(aauto, config.clone(), main) => {
+                            log::info!("handled usb client: {:?}", a);
+                        }
+                        _ = watch_for_disconnect(d) => {
+                            log::info!("USB DISCONNECTED");
+                        }
+                    }
+                    main.disconnect().await;
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            }
+            Ok(Err(e)) => {
+                log::error!("Failed to get accessory 2 {e}");
+                Err(())
+            }
+            Err(_e) => {
+                log::error!("Timeout get accessory 2");
+                return Err(());
+            }
+        }
+    }
+
+    /// Does a usb run
+    async fn usb_run(&self, config: &AndroidAutoConfiguration) {
+        #[cfg(feature = "usb")]
+        {
+            if self.supports_wired().is_some() {
+                if let Ok(mut watcher) = nusb::watch_devices() {
+                    use futures::StreamExt;
+                    log::info!("Looking for usb devices");
+                    if let Ok(devs) = nusb::list_devices().await {
+                        let mut start_device = None;
+                        for dev in devs {
+                            if usb::is_android_device(&dev) {
+                                start_device = Some(dev);
+                            }
+                        }
+                        let d = if let Some(d) = start_device {
+                            log::info!("Startup device {:?}", d);
+                            d
+                        } else {
+                            let device = loop {
+                                if let Some(dev) = watcher.next().await {
+                                    use nusb::hotplug::HotplugEvent;
+                                    if let HotplugEvent::Connected(di) = dev {
+                                        if usb::is_android_device(&di) {
+                                            log::info!("Hotplug device {:?}", di);
+                                            tokio::time::sleep(std::time::Duration::from_millis(
+                                                500,
+                                            ))
+                                            .await;
+                                            break di;
+                                        }
+                                    }
+                                }
+                            };
+                            device
+                        };
+                        let _ = self.do_usb_iteration(d, config).await;
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "usb"))]
+        {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            }
+        }
+    }
+
+    /// does a wifi run
+    async fn wifi_run(&self) {
+        #[cfg(feature = "wireless")]
+        {
+            if main.supports_wired().is_some() {
+                if let Ok(mut watcher) = nusb::watch_devices() {
+                    js.spawn(async move {
+                        use futures::StreamExt;
+                        log::info!("Looking for usb devices");
+                        if let Ok(devs) = nusb::list_devices().await {
+                            let mut start_device = None;
+                            for dev in devs {
+                                if usb::is_android_device(&dev) {
+                                    start_device = Some(dev);
+                                }
+                            }
+                            let d = if let Some(d) = start_device {
+                                log::info!("Startup device {:?}", d);
+                                d
+                            } else {
+                                let device = loop {
+                                    if let Some(dev) = watcher.next().await {
+                                        use nusb::hotplug::HotplugEvent;
+                                        if let HotplugEvent::Connected(di) = dev {
+                                            if usb::is_android_device(&di) {
+                                                log::info!("Hotplug device {:?}", di);
+                                                tokio::time::sleep(
+                                                    std::time::Duration::from_millis(500),
+                                                )
+                                                .await;
+                                                break di;
+                                            }
+                                        }
+                                    }
+                                };
+                                device
+                            };
+                            let _ = main.do_usb_iteration(d, &config).await;
+                        }
+                        Ok(())
+                    });
+                }
+            }
+        }
+        #[cfg(not(feature = "wireless"))]
+        {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            }
+        }
+    }
+
+    /// Runs the android auto server
+    async fn run(
+        self: Box<Self>,
+        config: AndroidAutoConfiguration,
+        js: &mut tokio::task::JoinSet<Result<(), String>>,
+    ) -> Result<(), String> {
+        let main = self.as_ref();
+        log::info!("Running android auto server");
+
+        tokio::select! {
+            a = main.usb_run(&config) => {}
+            b = main.wifi_run() => {}
+        }
+        Ok(())
+    }
 }
 
 /// this trait is implemented by users that support wired (usb) android auto
@@ -334,9 +526,6 @@ pub trait AndroidAutoBluetoothTrait: AndroidAutoMainTrait {
     /// Get the configuration
     fn get_config(&self) -> &BluetoothInformation;
 }
-
-/// This is the bluetooth server for initiating wireless android auto on compatible devices.
-pub struct AndroidAutoServer {}
 
 #[allow(missing_docs)]
 #[allow(clippy::missing_docs_in_private_items)]
@@ -1691,181 +1880,6 @@ async fn watch_for_disconnect(device_address: nusb::DeviceInfo) {
             }
             _ => {}
         }
-    }
-}
-
-#[cfg(feature = "usb")]
-/// Run a single usb device for android auto
-async fn do_usb_iteration<T: AndroidAutoMainTrait + Send + 'static>(
-    d: nusb::DeviceInfo,
-    config: &AndroidAutoConfiguration,
-    main: &T,
-) -> Result<(), ()> {
-    match d.open().await {
-        Ok(d) => {
-            let aoa = usb::get_aoa_protocol(&d).await;
-            log::info!("AOA is {:?}", aoa);
-            usb::identify_accessory(&d).await;
-            usb::accessory_start(&d).await;
-        }
-        Err(e) => {
-            log::error!("Failed to open android device {e}");
-            return Err(());
-        }
-    }
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(2000),
-        usb::wait_for_accessory(),
-    )
-    .await
-    {
-        Ok(Ok(newdev)) => {
-            let _ = newdev.reset().await;
-        }
-        Ok(Err(e)) => {
-            log::error!("Failed to get accessory {e}");
-            return Err(());
-        }
-        Err(_e) => {
-            log::error!("Timeout get accessory");
-            return Err(());
-        }
-    }
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(2000),
-        usb::wait_for_accessory(),
-    )
-    .await
-    {
-        Ok(Ok(newdev)) => {
-            log::info!("AOA DEV IS {:?}", newdev);
-            let aoa = usb::claim_aoa_interface(&newdev).await;
-            let aauto = usb::AndroidAutoUsb::new(aoa);
-            if let Some(aauto) = aauto {
-                log::info!("got aoa interface?");
-                tokio::select! {
-                    a = handle_client_usb(aauto, config.clone(), main) => {
-                        log::info!("handled usb client: {:?}", a);
-                    }
-                    _ = watch_for_disconnect(d) => {
-                        log::info!("USB DISCONNECTED");
-                    }
-                }
-                main.disconnect().await;
-                Ok(())
-            } else {
-                Err(())
-            }
-        }
-        Ok(Err(e)) => {
-            log::error!("Failed to get accessory 2 {e}");
-            Err(())
-        }
-        Err(_e) => {
-            log::error!("Timeout get accessory 2");
-            return Err(());
-        }
-    }
-}
-
-impl AndroidAutoServer {
-    /// Runs the android auto server
-    pub async fn run<T: AndroidAutoMainTrait + Send + 'static>(
-        self,
-        config: AndroidAutoConfiguration,
-        js: &mut tokio::task::JoinSet<Result<(), String>>,
-        main: T,
-    ) -> Result<(), String> {
-        log::info!("Running android auto server");
-        #[cfg(feature = "usb")]
-        {
-            if main.supports_wired().is_some() {
-                if let Ok(mut watcher) = nusb::watch_devices() {
-                    js.spawn(async move {
-                        use futures::StreamExt;
-                        log::info!("Looking for usb devices");
-                        if let Ok(devs) = nusb::list_devices().await {
-                            let mut start_device = None;
-                            for dev in devs {
-                                if usb::is_android_device(&dev) {
-                                    start_device = Some(dev);
-                                }
-                            }
-                            let d = if let Some(d) = start_device {
-                                log::info!("Startup device {:?}", d);
-                                d
-                            } else {
-                                let device = loop {
-                                    if let Some(dev) = watcher.next().await {
-                                        use nusb::hotplug::HotplugEvent;
-                                        if let HotplugEvent::Connected(di) = dev {
-                                            if usb::is_android_device(&di) {
-                                                log::info!("Hotplug device {:?}", di);
-                                                tokio::time::sleep(
-                                                    std::time::Duration::from_millis(500),
-                                                )
-                                                .await;
-                                                break di;
-                                            }
-                                        }
-                                    }
-                                };
-                                device
-                            };
-                            let _ = do_usb_iteration(d, &config, &main).await;
-                        }
-                        Ok(())
-                    });
-                }
-            }
-        }
-        #[cfg(feature = "wireless")]
-        if let Some(wireless) = main.supports_wireless() {
-            let psettings = bluetooth_rust::BluetoothRfcommProfileSettings {
-                uuid: bluetooth_rust::BluetoothUuid::AndroidAuto
-                    .as_str()
-                    .to_string(),
-                name: Some("Android Auto Bluetooth Service".to_string()),
-                service_uuid: Some(
-                    bluetooth_rust::BluetoothUuid::AndroidAuto
-                        .as_str()
-                        .to_string(),
-                ),
-                channel: Some(22),
-                psm: None,
-                authenticate: Some(true),
-                authorize: Some(true),
-                auto_connect: Some(true),
-                sdp_record: None,
-                sdp_version: None,
-                sdp_features: None,
-            };
-
-            let profile = wireless.setup_bluetooth_profile(&psettings).await?;
-            log::info!("Setup bluetooth profile is ok?");
-            let wireless2 = wireless.clone();
-            let kill = tokio::sync::oneshot::channel::<()>();
-            js.spawn(async move {
-                tokio::select! {
-                    e = bluetooth_service(profile, wireless2) => {
-                        log::error!("Android auto bluetooth service stopped: {:?}", e);
-                        e
-                    }
-                    _ = kill.1 => {
-                        Ok(())
-                    }
-                }
-            });
-            let e = wifi_service(config, wireless.clone()).await;
-            let _ = kill.0.send(());
-            log::error!("Android auto wireless service stopped: {:?}", e);
-        }
-        Ok(())
-    }
-
-    /// Construct a new self
-    pub async fn new() -> Self {
-        Self {}
     }
 }
 
