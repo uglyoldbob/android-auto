@@ -217,6 +217,7 @@ pub trait AndroidAutoMainTrait:
         &self,
         d: nusb::DeviceInfo,
         config: &AndroidAutoConfiguration,
+        setup: &AndroidAutoSetup,
     ) -> Result<(), ()> {
         let main = self;
         match d.open().await {
@@ -288,7 +289,7 @@ pub trait AndroidAutoMainTrait:
     }
 
     /// Does a usb run
-    async fn usb_run(&self, config: &AndroidAutoConfiguration) {
+    async fn usb_run(&self, config: &AndroidAutoConfiguration, setup: &AndroidAutoSetup) {
         #[cfg(feature = "usb")]
         {
             if self.supports_wired().is_some() {
@@ -323,7 +324,7 @@ pub trait AndroidAutoMainTrait:
                             };
                             device
                         };
-                        let a = self.do_usb_iteration(d, config).await;
+                        let a = self.do_usb_iteration(d, config, setup).await;
                         log::info!("usb iteration returned {:?}", a);
                     }
                 }
@@ -342,7 +343,7 @@ pub trait AndroidAutoMainTrait:
     }
 
     /// does a wifi run
-    async fn wifi_run(&self, config: &AndroidAutoConfiguration) {
+    async fn wifi_run(&self, config: &AndroidAutoConfiguration, setup: &AndroidAutoSetup) {
         #[cfg(feature = "wireless")]
         {
             if let Some(wireless) = self.supports_wireless() {
@@ -408,15 +409,16 @@ pub trait AndroidAutoMainTrait:
         self: Box<Self>,
         config: AndroidAutoConfiguration,
         js: &mut tokio::task::JoinSet<Result<(), String>>,
+        setup: &AndroidAutoSetup,
     ) -> Result<(), String> {
         let main = self.as_ref();
         log::info!("Running android auto server");
 
         tokio::select! {
-            _a = main.usb_run(&config) => {
+            _a = main.usb_run(&config, setup) => {
                 log::error!("usb run finished");
             }
-            _b = main.wifi_run(&config) => {
+            _b = main.wifi_run(&config, setup) => {
                 log::error!("wifi config finished");
             }
         }
@@ -1903,8 +1905,24 @@ async fn watch_for_disconnect(device_address: nusb::DeviceInfo) {
     }
 }
 
-/// Perform any setup required on startup of the library
-pub fn setup() {
+/// Token proving that [`setup`] has been called. Required to use the library's
+/// main entry points so that initialisation cannot be forgotten.
+///
+/// Constructed exclusively by [`setup`]; users cannot build this type themselves.
+/// The token is `Copy` so it can be stored and handed to multiple container
+/// restarts without needing to call `setup` again.
+#[derive(Clone, Copy)]
+pub struct AndroidAutoSetup {
+    _private: (),
+}
+
+/// Perform any setup required on startup of the library.
+///
+/// Returns an [`AndroidAutoSetup`] token that must be passed to [`AndroidAutoMainTrait::run`]
+/// (and related methods). Requiring this token at the call site ensures that setup is
+/// never accidentally skipped.
+pub fn setup() -> AndroidAutoSetup {
     let cp = rustls::crypto::ring::default_provider();
     cp.install_default().expect("Failed to set ssl provider");
+    AndroidAutoSetup { _private: () }
 }

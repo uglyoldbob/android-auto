@@ -529,6 +529,7 @@ impl AndroidAuto {
     async fn start_android_auto(
         self,
         config: android_auto::AndroidAutoConfiguration,
+        setup: android_auto::AndroidAutoSetup,
     ) -> Result<(), String> {
         let mut joinset = tokio::task::JoinSet::new();
         let relay = {
@@ -537,7 +538,7 @@ impl AndroidAuto {
         };
         use android_auto::AndroidAutoMainTrait;
         let b = Box::new(self);
-        let a = b.run(config, &mut joinset).await;
+        let a = b.run(config, &mut joinset, &setup).await;
         log::info!("join_all on the android auto joinset");
         joinset.join_all().await;
         log::info!("Done with join_all");
@@ -550,14 +551,16 @@ struct MyEguiApp {
     android_auto_video_decoder: openh264::decoder::Decoder,
     android_auto_texture: Option<egui::TextureHandle>,
     container: Option<AndroidAutoContainer>,
+    setup: android_auto::AndroidAutoSetup,
 }
 
 impl MyEguiApp {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(_cc: &eframe::CreationContext<'_>, setup: android_auto::AndroidAutoSetup) -> Self {
         Self {
             android_auto_video_decoder: openh264::decoder::Decoder::new().unwrap(),
             android_auto_texture: None,
-            container: Some(AndroidAutoContainer::new()),
+            container: Some(AndroidAutoContainer::new(setup)),
+            setup,
         }
     }
 }
@@ -626,7 +629,7 @@ impl eframe::App for MyEguiApp {
             }
         }
         if replace_container {
-            self.container = Some(AndroidAutoContainer::new());
+            self.container = Some(AndroidAutoContainer::new(self.setup));
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             let size = ui.available_size();
@@ -711,7 +714,7 @@ struct AndroidAutoContainer {
 }
 
 impl AndroidAutoContainer {
-    fn new() -> Self {
+    fn new(setup: android_auto::AndroidAutoSetup) -> Self {
         let to_async = tokio::sync::mpsc::channel(50);
         let from_async = tokio::sync::mpsc::channel(50);
         let kill = tokio::sync::oneshot::channel::<()>();
@@ -835,7 +838,7 @@ impl AndroidAutoContainer {
                     custom_certificate: None,
                 };
                 tokio::select! {
-                    _ = aa.start_android_auto(config) => {
+                    _ = aa.start_android_auto(config, setup) => {
                         log::info!("android auto exited");
                     }
                     _ = kill.1 => {
@@ -873,12 +876,12 @@ fn main() -> Result<(), u32> {
         .unwrap();
     let native_options = eframe::NativeOptions::default();
 
-    android_auto::setup();
+    let setup = android_auto::setup();
 
     let _ = eframe::run_native(
         "Android auto demo",
         native_options,
-        Box::new(move |cc| Ok(Box::new(MyEguiApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(MyEguiApp::new(cc, setup)))),
     );
     Ok(())
 }

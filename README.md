@@ -123,26 +123,26 @@ Add `android-auto` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-android-auto = "0.3.2"
+android-auto = "0.3.3"
 
 # For wired (USB) support:
-android-auto = { version = "0.3.2", features = ["usb"] }
+android-auto = { version = "0.3.3", features = ["usb"] }
 
 # For wireless (Bluetooth-initiated) support:
-android-auto = { version = "0.3.2", features = ["wireless"] }
+android-auto = { version = "0.3.3", features = ["wireless"] }
 
 # For both:
-android-auto = { version = "0.3.2", features = ["usb", "wireless"] }
+android-auto = { version = "0.3.3", features = ["usb", "wireless"] }
 ```
 
 ### Initialization
 
-Call `android_auto::setup()` once at program startup before doing anything else. It installs the TLS crypto provider:
+Call `android_auto::setup()` once at program startup before doing anything else. It installs the TLS crypto provider and returns an `AndroidAutoSetup` token that **must** be passed to `run()` (and related methods). Requiring this token at the call site is a compile-time guarantee that initialisation is never accidentally skipped:
 
 ```rust
 fn main() {
-    android_auto::setup();
-    // ...
+    let setup = android_auto::setup();
+    // pass `setup` to run() later …
 }
 ```
 
@@ -209,7 +209,7 @@ impl AndroidAutoMainTrait for MyHeadUnit {
 
 #[tokio::main]
 async fn main() {
-    android_auto::setup();
+    let setup = android_auto::setup();
 
     let config = AndroidAutoConfiguration {
         unit: HeadUnitInfo {
@@ -229,7 +229,7 @@ async fn main() {
     };
 
     let mut js = tokio::task::JoinSet::new();
-    let _ = Box::new(MyHeadUnit).run(config, &mut js).await;
+    let _ = Box::new(MyHeadUnit).run(config, &mut js, &setup).await;
 }
 ```
 
@@ -268,6 +268,7 @@ android-auto/
 
 | Type | Role |
 |------|------|
+| `AndroidAutoSetup` | Proof-of-initialisation token returned by `setup()`; must be passed to `run()` and related methods — ensures initialisation is never skipped |
 | `AndroidAutoConfiguration` | Top-level configuration for the head unit (`unit: HeadUnitInfo`, optional custom certificate) |
 | `HeadUnitInfo` | Static identity information sent to the phone during handshake |
 | `BluetoothInformation` | Bluetooth adapter MAC address used for wireless negotiation |
