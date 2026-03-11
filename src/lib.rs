@@ -11,6 +11,9 @@ use std::{
 
 mod cert;
 
+#[cfg(not(any(feature = "wireless", feature = "usb")))]
+compile_error!("One of wireless or usb features must be enabled, both is also ok");
+
 use ::protobuf::Message;
 use Wifi::ChannelDescriptor;
 #[cfg(feature = "wireless")]
@@ -166,6 +169,38 @@ impl From<FrameIoError> for ClientError {
 static CHANNEL_HANDLERS: tokio::sync::RwLock<Vec<ChannelHandler>> =
     tokio::sync::RwLock::const_new(Vec::new());
 
+/// The types of connections that can exist, exists to make it possible for the usb and wireless features to work with tokio::select macro
+pub enum ConnectionType {
+    /// The variant for usb connections
+    #[cfg(feature = "usb")]
+    Usb(usb::AndroidAutoUsb),
+    /// The variant for wireless connections
+    #[cfg(feature = "wireless")]
+    Wireless(tokio::net::TcpStream),
+}
+
+impl ConnectionType {
+    /// Run the connection
+    async fn run<T: AndroidAutoMainTrait + ?Sized>(
+        self,
+        config: AndroidAutoConfiguration,
+        main: &Box<T>,
+    ) {
+        match self {
+            #[cfg(feature = "usb")]
+            ConnectionType::Usb(a) => {
+                let stream = a.into_split();
+                let _ = handle_client_generic(stream.0, stream.1, config, main).await;
+            }
+            #[cfg(feature = "wireless")]
+            ConnectionType::Wireless(w) => {
+                let stream = w.into_split();
+                let _ = handle_client_generic(stream.0, stream.1, config, main).await;
+            }
+        }
+    }
+}
+
 /// The base trait for crate users to implement
 #[async_trait::async_trait]
 pub trait AndroidAutoMainTrait:
@@ -218,7 +253,7 @@ pub trait AndroidAutoMainTrait:
         d: nusb::DeviceInfo,
         config: &AndroidAutoConfiguration,
         setup: &AndroidAutoSetup,
-    ) -> Result<(), ()> {
+    ) -> Result<ConnectionType, ()> {
         let main = self;
         match d.open().await {
             Ok(d) => {
@@ -262,17 +297,7 @@ pub trait AndroidAutoMainTrait:
                 let aauto = usb::AndroidAutoUsb::new(aoa);
                 if let Some(aauto) = aauto {
                     log::info!("got aoa interface?");
-                    main.connect().await;
-                    tokio::select! {
-                        a = handle_client_usb(aauto, config.clone(), main) => {
-                            log::info!("handled usb client: {:?}", a);
-                        }
-                        _ = watch_for_disconnect(d) => {
-                            log::info!("USB DISCONNECTED");
-                        }
-                    }
-                    main.disconnect().await;
-                    Ok(())
+                    return Ok(ConnectionType::Usb(aauto));
                 } else {
                     Err(())
                 }
@@ -289,13 +314,32 @@ pub trait AndroidAutoMainTrait:
     }
 
     /// Does a usb run
-    async fn usb_run(&self, config: &AndroidAutoConfiguration, setup: &AndroidAutoSetup) {
+    async fn usb_run(
+        &self,
+        config: &AndroidAutoConfiguration,
+        setup: &AndroidAutoSetup,
+    ) -> (ConnectionType, AsyncFn, AsyncFn) {
         #[cfg(feature = "usb")]
         {
             if self.supports_wired().is_some() {
                 if let Ok(mut watcher) = nusb::watch_devices() {
                     use futures::StreamExt;
                     log::info!("Looking for usb devices");
+                    let looper = async |watcher: &mut nusb::hotplug::HotplugWatch| {
+                        loop {
+                            if let Some(dev) = watcher.next().await {
+                                use nusb::hotplug::HotplugEvent;
+                                if let HotplugEvent::Connected(di) = dev {
+                                    if usb::is_android_device(&di) {
+                                        log::info!("Hotplug device {:?}", di);
+                                        tokio::time::sleep(std::time::Duration::from_millis(500))
+                                            .await;
+                                        break di;
+                                    }
+                                }
+                            }
+                        }
+                    };
                     if let Ok(devs) = nusb::list_devices().await {
                         let mut start_device = None;
                         for dev in devs {
@@ -307,25 +351,31 @@ pub trait AndroidAutoMainTrait:
                             log::info!("Startup device {:?}", d);
                             d
                         } else {
-                            let device = loop {
-                                if let Some(dev) = watcher.next().await {
-                                    use nusb::hotplug::HotplugEvent;
-                                    if let HotplugEvent::Connected(di) = dev {
-                                        if usb::is_android_device(&di) {
-                                            log::info!("Hotplug device {:?}", di);
-                                            tokio::time::sleep(std::time::Duration::from_millis(
-                                                500,
-                                            ))
-                                            .await;
-                                            break di;
-                                        }
-                                    }
-                                }
-                            };
-                            device
+                            looper(&mut watcher).await
                         };
-                        let a = self.do_usb_iteration(d, config, setup).await;
-                        log::info!("usb iteration returned {:?}", a);
+                        let a = self.do_usb_iteration(d.clone(), config, setup).await;
+                        if let Ok(a) = a {
+                            let disconnect = make_disconnect_watcher(d);
+                            let kill: AsyncFn = Box::new(move || Box::pin(async move {}));
+                            return (a, disconnect, kill);
+                        }
+                        loop {
+                            let b = looper(&mut watcher).await;
+                            let a = self.do_usb_iteration(b.clone(), config, setup).await;
+                            if let Ok(a) = a {
+                                let disconnect = make_disconnect_watcher(b);
+                                let kill: AsyncFn = Box::new(move || Box::pin(async move {}));
+                                return (a, disconnect, kill);
+                            }
+                        }
+                    } else {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                        }
+                    }
+                } else {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     }
                 }
             } else {
@@ -343,7 +393,11 @@ pub trait AndroidAutoMainTrait:
     }
 
     /// does a wifi run
-    async fn wifi_run(&self, config: &AndroidAutoConfiguration, setup: &AndroidAutoSetup) {
+    async fn wifi_run(
+        &self,
+        config: &AndroidAutoConfiguration,
+        setup: &AndroidAutoSetup,
+    ) -> (ConnectionType, AsyncFn, AsyncFn) {
         #[cfg(feature = "wireless")]
         {
             if let Some(wireless) = self.supports_wireless() {
@@ -382,9 +436,18 @@ pub trait AndroidAutoMainTrait:
                             }
                         }
                     });
-                    let e = wifi_service(config, wireless.clone()).await;
-                    let _ = kill.0.send(());
-                    log::error!("Android auto wireless service stopped: {:?}", e);
+                    loop {
+                        let e = wifi_service(wireless.clone()).await;
+                        if let Ok(e) = e {
+                            let disconnect: AsyncFn = Box::new(move || Box::pin(async move {}));
+                            let kill2: AsyncFn = Box::new(move || {
+                                Box::pin(async move {
+                                    kill.0.send(());
+                                })
+                            });
+                            return (e, disconnect, kill2);
+                        }
+                    }
                 } else {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -411,17 +474,27 @@ pub trait AndroidAutoMainTrait:
         js: &mut tokio::task::JoinSet<Result<(), String>>,
         setup: &AndroidAutoSetup,
     ) -> Result<(), String> {
-        let main = self.as_ref();
         log::info!("Running android auto server");
 
-        tokio::select! {
-            _a = main.usb_run(&config, setup) => {
+        let (d, abort, kill) = tokio::select! {
+            a = self.usb_run(&config, setup) => {
                 log::error!("usb run finished");
+                a
             }
-            _b = main.wifi_run(&config, setup) => {
+            b = self.wifi_run(&config, setup) => {
                 log::error!("wifi config finished");
+                b
             }
+        };
+
+        self.connect().await;
+        tokio::select! {
+            a = d.run(config, &self) => {}
+            b = abort() => {}
         }
+        kill().await;
+        self.disconnect().await;
+
         Ok(())
     }
 }
@@ -1664,9 +1737,8 @@ async fn bluetooth_service(
 #[cfg(feature = "wireless")]
 /// Runs the wifi service for android auto
 async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
-    config: &AndroidAutoConfiguration,
     wireless: Arc<T>,
-) -> Result<(), String> {
+) -> Result<ConnectionType, String> {
     let network = wireless.get_wifi_details();
 
     log::info!(
@@ -1675,17 +1747,12 @@ async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
     );
     if let Ok(a) = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", network.port)).await {
         log::info!("Starting wifi listener");
-        if let Ok((stream, _addr)) = a.accept().await {
-            let config2 = config.clone();
-            let _ = stream.set_nodelay(true);
-            wireless.connect().await;
-            if let Err(e) = handle_client_tcp(stream, config2, wireless.as_ref()).await {
-                log::error!("Disconnect from client: {:?}", e);
+        loop {
+            if let Ok((stream, _addr)) = a.accept().await {
+                let _ = stream.set_nodelay(true);
+                return Ok(ConnectionType::Wireless(stream));
             }
-            wireless.disconnect().await;
         }
-        log::info!("Stopping wifi listener");
-        Ok(())
     } else {
         Err(format!("Failed to listen on port {} tcp", network.port))
     }
@@ -1700,7 +1767,7 @@ async fn handle_client_generic<
     reader: R,
     writer: W,
     config: AndroidAutoConfiguration,
-    main: &T,
+    main: &Box<T>,
 ) -> Result<(), ClientError> {
     log::info!("Got android auto client");
     let mut root_store =
@@ -1796,7 +1863,7 @@ async fn handle_client_generic<
         let mut chans = Vec::new();
         for (index, handler) in channel_handlers.iter().enumerate() {
             let chan: ChannelId = index as u8;
-            if let Some(chan) = handler.build_channel(&config, chan, main) {
+            if let Some(chan) = handler.build_channel(&config, chan, main.as_ref()) {
                 chans.push(chan);
             }
         }
@@ -1842,12 +1909,12 @@ async fn do_android_auto_loop<
     channel_handlers: RwLockReadGuard<'_, Vec<ChannelHandler>>,
     sm: StreamMux<R, W>,
     config: AndroidAutoConfiguration,
-    main: &T,
+    main: &Box<T>,
 ) -> Result<(), ClientError> {
     loop {
         if let Ok(f) = sm.read_frame(&mut fr2).await {
             if let Some(handler) = channel_handlers.get(f.header.channel_id as usize) {
-                handler.receive_data(f, &sm, &config, main).await?;
+                handler.receive_data(f, &sm, &config, main.as_ref()).await?;
             } else {
                 panic!("Unknown channel id: {:?}", f.header.channel_id);
             }
@@ -1855,35 +1922,13 @@ async fn do_android_auto_loop<
     }
 }
 
-#[cfg(feature = "wireless")]
-/// Handle a single android auto device for a head unit
-async fn handle_client_tcp<T: AndroidAutoMainTrait + ?Sized>(
-    stream: tokio::net::TcpStream,
-    config: AndroidAutoConfiguration,
-    main: &T,
-) -> Result<(), ClientError> {
-    let stream = stream.into_split();
-    handle_client_generic(stream.0, stream.1, config, main).await
-}
-
-#[cfg(feature = "usb")]
-/// Handle a single android auto device for a head unit
-async fn handle_client_usb<T: AndroidAutoMainTrait + ?Sized>(
-    stream: usb::AndroidAutoUsb,
-    config: AndroidAutoConfiguration,
-    main: &T,
-) -> Result<(), ClientError> {
-    let stream = stream.into_split();
-    handle_client_generic(stream.0, stream.1, config, main).await
-}
-
 #[cfg(feature = "usb")]
 /// Watch for a usb disconnect message from nusb
-async fn watch_for_disconnect(device_address: nusb::DeviceInfo) {
+async fn watch_for_disconnect(device_address: Arc<nusb::DeviceInfo>) {
     let mut watcher = nusb::watch_devices().unwrap();
     while let Some(event) = watcher.next().await {
         match event {
-            nusb::hotplug::HotplugEvent::Disconnected(info) => {
+            nusb::hotplug::HotplugEvent::Disconnected(_info) => {
                 let devs = nusb::list_devices().await;
                 if let Ok(mut devs) = devs {
                     if devs
@@ -1903,6 +1948,21 @@ async fn watch_for_disconnect(device_address: nusb::DeviceInfo) {
             _ => {}
         }
     }
+}
+
+/// A helper type for operating the android auto code
+type AsyncFn =
+    Box<dyn FnOnce() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+#[cfg(feature = "usb")]
+fn make_disconnect_watcher(device_address: nusb::DeviceInfo) -> AsyncFn {
+    let device_address = std::sync::Arc::new(device_address);
+    Box::new(move || {
+        let device_address = device_address.clone();
+        Box::pin(async move {
+            watch_for_disconnect(device_address).await;
+        })
+    })
 }
 
 /// Token proving that [`setup`] has been called. Required to use the library's

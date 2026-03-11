@@ -297,12 +297,14 @@ impl android_auto::AndroidAutoMainTrait for AndroidAuto {
     async fn connect(&self) {
         let mut i = self.inner.lock().await;
         let _ = i.send.send(MessageFromAsync::Connected).await;
+        log::info!("Android auto connected");
         i.connected = true;
     }
 
     async fn disconnect(&self) {
         let mut s = self.inner.lock().await;
         let _ = s.send.send(MessageFromAsync::Disconnected).await;
+        log::info!("Android auto disconnected");
         s.connected = false;
     }
 
