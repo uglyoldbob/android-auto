@@ -195,7 +195,8 @@ impl ConnectionType {
             #[cfg(feature = "wireless")]
             ConnectionType::Wireless(w) => {
                 let stream = w.into_split();
-                let _ = handle_client_generic(stream.0, stream.1, config, main).await;
+                let a = handle_client_generic(stream.0, stream.1, config, main).await;
+                log::error!("The error for wifi is {:?}", a);
             }
         }
     }
@@ -432,6 +433,7 @@ pub trait AndroidAutoMainTrait:
                                 e
                             }
                             _ = kill.1 => {
+                                log::error!("Kill bluetooth service");
                                 Ok(())
                             }
                         }
@@ -439,7 +441,14 @@ pub trait AndroidAutoMainTrait:
                     loop {
                         let e = wifi_service(wireless.clone()).await;
                         if let Ok(e) = e {
-                            let disconnect: AsyncFn = Box::new(move || Box::pin(async move {}));
+                            let disconnect: AsyncFn = Box::new(move || {
+                                Box::pin(async move {
+                                    loop {
+                                        tokio::time::sleep(std::time::Duration::from_millis(1000))
+                                            .await;
+                                    }
+                                })
+                            });
                             let kill2: AsyncFn = Box::new(move || {
                                 Box::pin(async move {
                                     kill.0.send(());
@@ -478,7 +487,7 @@ pub trait AndroidAutoMainTrait:
 
         let (d, abort, kill) = tokio::select! {
             a = self.usb_run(&config, setup) => {
-                log::error!("usb run finished");
+                log::error!("usb config finished");
                 a
             }
             b = self.wifi_run(&config, setup) => {
@@ -489,8 +498,12 @@ pub trait AndroidAutoMainTrait:
 
         self.connect().await;
         tokio::select! {
-            a = d.run(config, &self) => {}
-            b = abort() => {}
+            a = d.run(config, &self) => {
+                log::error!("Android auto finished {:?}", a);
+            }
+            b = abort() => {
+                log::error!("Android auto aborted {:?}", b);
+            }
         }
         kill().await;
         self.disconnect().await;
