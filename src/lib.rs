@@ -57,6 +57,27 @@ mod usb;
 
 pub use protobuf;
 
+/// Used to implement a future that never returns
+pub struct Never<T>(std::marker::PhantomData<T>);
+
+impl<T> Never<T> {
+    /// Construct a new Self
+    pub fn new() -> Self {
+        Never(std::marker::PhantomData)
+    }
+}
+
+impl<T> std::future::Future for Never<T> {
+    type Output = T;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Pending
+    }
+}
+
 /// Errors that can occur when trying to receive frames
 #[derive(Debug)]
 pub enum FrameReceiptError {
@@ -370,26 +391,18 @@ pub trait AndroidAutoMainTrait:
                             }
                         }
                     } else {
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                        }
+                        Never::new().await
                     }
                 } else {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                    }
+                    Never::new().await
                 }
             } else {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                }
+                Never::new().await
             }
         }
         #[cfg(not(feature = "usb"))]
         {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-            }
+            Never::new().await
         }
     }
 
@@ -441,14 +454,8 @@ pub trait AndroidAutoMainTrait:
                     loop {
                         let e = wifi_service(wireless.clone()).await;
                         if let Ok(e) = e {
-                            let disconnect: AsyncFn = Box::new(move || {
-                                Box::pin(async move {
-                                    loop {
-                                        tokio::time::sleep(std::time::Duration::from_millis(1000))
-                                            .await;
-                                    }
-                                })
-                            });
+                            let disconnect: AsyncFn =
+                                Box::new(move || Box::pin(async move { Never::new().await }));
                             let kill2: AsyncFn = Box::new(move || {
                                 Box::pin(async move {
                                     kill.0.send(());
@@ -458,21 +465,15 @@ pub trait AndroidAutoMainTrait:
                         }
                     }
                 } else {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                    }
+                    Never::new().await
                 }
             } else {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                }
+                Never::new().await
             }
         }
         #[cfg(not(feature = "wireless"))]
         {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-            }
+            Never::new().await
         }
     }
 
