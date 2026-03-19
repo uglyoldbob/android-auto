@@ -3,11 +3,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use std::{
-    collections::HashSet,
-    io::{Cursor, Read, Write},
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 
 mod cert;
 
@@ -26,6 +22,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::RwLockReadGuard,
 };
+use tokio_rustls::TlsConnector;
 
 mod avinput;
 use avinput::*;
@@ -56,27 +53,6 @@ use video::*;
 mod usb;
 
 pub use protobuf;
-
-/// Used to implement a future that never returns
-pub struct Never<T>(std::marker::PhantomData<T>);
-
-impl<T> Never<T> {
-    /// Construct a new Self
-    pub fn new() -> Self {
-        Never(std::marker::PhantomData)
-    }
-}
-
-impl<T> std::future::Future for Never<T> {
-    type Output = T;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Pending
-    }
-}
 
 /// Errors that can occur when trying to receive frames
 #[derive(Debug)]
@@ -211,12 +187,15 @@ impl ConnectionType {
             #[cfg(feature = "usb")]
             ConnectionType::Usb(a) => {
                 let stream = a.into_split();
-                let _ = handle_client_generic(stream.0, stream.1, config, main).await;
+                let joined = JoinedStream {
+                    reader: stream.0,
+                    writer: stream.1,
+                };
+                let _ = handle_client_generic(joined, config, main).await;
             }
             #[cfg(feature = "wireless")]
             ConnectionType::Wireless(w) => {
-                let stream = w.into_split();
-                let a = handle_client_generic(stream.0, stream.1, config, main).await;
+                let a = handle_client_generic(w, config, main).await;
                 log::error!("The error for wifi is {:?}", a);
             }
         }
@@ -391,18 +370,26 @@ pub trait AndroidAutoMainTrait:
                             }
                         }
                     } else {
-                        Never::new().await
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                        }
                     }
                 } else {
-                    Never::new().await
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    }
                 }
             } else {
-                Never::new().await
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                }
             }
         }
         #[cfg(not(feature = "usb"))]
         {
-            Never::new().await
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            }
         }
     }
 
@@ -454,8 +441,14 @@ pub trait AndroidAutoMainTrait:
                     loop {
                         let e = wifi_service(wireless.clone()).await;
                         if let Ok(e) = e {
-                            let disconnect: AsyncFn =
-                                Box::new(move || Box::pin(async move { Never::new().await }));
+                            let disconnect: AsyncFn = Box::new(move || {
+                                Box::pin(async move {
+                                    loop {
+                                        tokio::time::sleep(std::time::Duration::from_millis(1000))
+                                            .await;
+                                    }
+                                })
+                            });
                             let kill2: AsyncFn = Box::new(move || {
                                 Box::pin(async move {
                                     kill.0.send(());
@@ -465,15 +458,21 @@ pub trait AndroidAutoMainTrait:
                         }
                     }
                 } else {
-                    Never::new().await
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    }
                 }
             } else {
-                Never::new().await
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                }
             }
         }
         #[cfg(not(feature = "wireless"))]
         {
-            Never::new().await
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            }
         }
     }
 
@@ -638,6 +637,50 @@ pub trait AndroidAutoBluetoothTrait: AndroidAutoMainTrait {
 
 #[allow(missing_docs)]
 #[allow(clippy::missing_docs_in_private_items)]
+/// A helper that combines a separate [`AsyncRead`] and [`AsyncWrite`] into a
+/// single object implementing both traits.  Used to wrap the independent USB
+/// bulk-transfer endpoints so they can be handed to a [`TlsConnector`].
+struct JoinedStream<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
+    /// The read half
+    reader: R,
+    /// The write half
+    writer: W,
+}
+
+impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> tokio::io::AsyncRead for JoinedStream<R, W> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().reader).poll_read(cx, buf)
+    }
+}
+
+impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> tokio::io::AsyncWrite for JoinedStream<R, W> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().writer).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().writer).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().writer).poll_shutdown(cx)
+    }
+}
+
 mod protobufmod {
     include!(concat!(env!("OUT_DIR"), "/protobuf/mod.rs"));
 }
@@ -1033,27 +1076,14 @@ impl AndroidAutoFrame {
     }
 
     /// Build a vec with the frame that is ready to send out over the connection to the compatible android auto device.
-    /// If necessary, the data will be encrypted.
-    async fn build_vec(&self, stream: Option<&mut rustls::client::ClientConnection>) -> Vec<u8> {
+    /// TLS encryption is handled transparently by the underlying [`tokio_rustls::client::TlsStream`].
+    async fn build_vec(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.header.add_to(&mut buf);
-        if self.header.frame.get_encryption() {
-            if let Some(stream) = stream {
-                let mut data = Vec::new();
-                stream.writer().write_all(&self.data).unwrap();
-                stream.write_tls(&mut data).unwrap();
-                let mut p = (data.len() as u16).to_be_bytes().to_vec();
-                buf.append(&mut p);
-                buf.append(&mut data);
-            } else {
-                panic!("No ssl object when encryption was required");
-            }
-        } else {
-            let mut data = self.data.clone();
-            let mut p = (data.len() as u16).to_be_bytes().to_vec();
-            buf.append(&mut p);
-            buf.append(&mut data);
-        }
+        let mut data = self.data.clone();
+        let mut p = (data.len() as u16).to_be_bytes().to_vec();
+        buf.append(&mut p);
+        buf.append(&mut data);
         buf
     }
 }
@@ -1076,11 +1106,11 @@ impl AndroidAutoFrameReceiver {
     }
 
     /// Read the contents of a frame using the details specified in the header that has already been read.
+    /// TLS decryption is handled transparently by the underlying [`tokio_rustls::client::TlsStream`].
     async fn read<T: tokio::io::AsyncRead + Unpin>(
         &mut self,
         header: &FrameHeader,
         stream: &mut T,
-        ssl_stream: &mut rustls::client::ClientConnection,
     ) -> Result<Option<AndroidAutoFrame>, FrameReceiptError> {
         if self.len.is_none() {
             if header.frame.get_frame_type() == FrameHeaderType::First {
@@ -1110,30 +1140,6 @@ impl AndroidAutoFrameReceiver {
             }
         }
 
-        let decrypt = |ssl_stream: &mut rustls::client::ClientConnection,
-                       _len: u16,
-                       data_frame: Vec<u8>|
-         -> Result<Vec<u8>, FrameReceiptError> {
-            let mut plain_data = vec![0u8; data_frame.len()];
-            let mut cursor = Cursor::new(&data_frame);
-            let mut index = 0;
-            loop {
-                let asdf = ssl_stream
-                    .read_tls(&mut cursor)
-                    .map_err(|e| FrameReceiptError::TlsReadError(e))?;
-                let _ = ssl_stream
-                    .process_new_packets()
-                    .map_err(|e| FrameReceiptError::TlsProcessingError(e))?;
-                if asdf == 0 {
-                    break;
-                }
-                if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
-                    index += l;
-                }
-            }
-            Ok(plain_data[0..index].to_vec())
-        };
-
         if let Some(len) = self.len.take() {
             let mut data_frame = vec![0u8; len as usize];
             stream
@@ -1145,20 +1151,9 @@ impl AndroidAutoFrameReceiver {
                     _ => FrameReceiptError::UnexpectedDuringFrameContents(e),
                 })?;
             let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
-                let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)?
-                } else {
-                    data_frame
-                };
-                let d = data_plain.clone();
-                Some(vec![d])
+                Some(vec![data_frame])
             } else {
-                let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)?
-                } else {
-                    data_frame
-                };
-                self.rx_sofar.push(data_plain);
+                self.rx_sofar.push(data_frame);
                 if header.frame.get_frame_type() == FrameHeaderType::Last {
                     let d = self.rx_sofar.clone();
                     self.rx_sofar.clear();
@@ -1173,8 +1168,7 @@ impl AndroidAutoFrameReceiver {
                     header: *header,
                     data,
                 };
-                let f = Some(f);
-                return Ok(f);
+                return Ok(Some(f));
             }
         }
         Ok(None)
@@ -1232,12 +1226,11 @@ trait ChannelHandlerTrait {
     /// Process data received that is specific to this channel. Return an error for any packets that were not handled that should cause communication to stop.
     async fn receive_data<
         T: AndroidAutoMainTrait + ?Sized,
-        U: tokio::io::AsyncRead + Unpin,
-        V: tokio::io::AsyncWrite + Unpin,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     >(
         &self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U, V>,
+        stream: &StreamMux<S>,
         _config: &AndroidAutoConfiguration,
         _main: &T,
     ) -> Result<(), FrameIoError>;
@@ -1441,90 +1434,42 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
     }
 }
 
-/// An object that allows multiple tasks to send or receive frames
-struct StreamMux<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
-    /// The reader for receiving frames from the android auto device
-    reader: Arc<tokio::sync::Mutex<T>>,
-    /// The writer for sending frames to the android auto device
-    writer: Arc<tokio::sync::Mutex<U>>,
-    /// The object used for tls communication
-    ssl_client: Arc<tokio::sync::Mutex<rustls::client::ClientConnection>>,
+/// An object that allows multiple tasks to send or receive frames.
+///
+/// Wraps a [`tokio_rustls::client::TlsStream`] that has been split into
+/// independent read and write halves via [`tokio::io::split`].  TLS
+/// encryption and decryption are handled transparently by the stream itself.
+struct StreamMux<S: AsyncRead + AsyncWrite + Unpin> {
+    /// The read half produced by splitting the TLS stream
+    reader: Arc<tokio::sync::Mutex<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<S>>>>,
+    /// The write half produced by splitting the TLS stream
+    writer: Arc<tokio::sync::Mutex<tokio::io::WriteHalf<tokio_rustls::client::TlsStream<S>>>>,
 }
 
-impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> Clone for StreamMux<T, U> {
+impl<S: AsyncRead + AsyncWrite + Unpin> Clone for StreamMux<S> {
     fn clone(&self) -> Self {
         Self {
             reader: self.reader.clone(),
             writer: self.writer.clone(),
-            ssl_client: self.ssl_client.clone(),
         }
     }
 }
 
-impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
-    /// Construct a new self
-    pub fn new(sr: T, ss: U, ssl_client: rustls::client::ClientConnection) -> Self {
+impl<S: AsyncRead + AsyncWrite + Unpin> StreamMux<S> {
+    /// Construct a new [`StreamMux`] by splitting the provided TLS stream into
+    /// independent reader and writer halves.
+    pub fn new(stream: tokio_rustls::client::TlsStream<S>) -> Self {
+        let (reader, writer) = tokio::io::split(stream);
         Self {
-            reader: Arc::new(tokio::sync::Mutex::new(sr)),
-            writer: Arc::new(tokio::sync::Mutex::new(ss)),
-            ssl_client: Arc::new(tokio::sync::Mutex::new(ssl_client)),
+            reader: Arc::new(tokio::sync::Mutex::new(reader)),
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
         }
     }
 
-    /// Is the stream currently in handshake process?
-    pub async fn is_handshaking(&self) -> bool {
-        let ssl_stream = self.ssl_client.lock().await;
-        ssl_stream.is_handshaking()
-    }
-
-    /// Start the ssl handshake process
-    pub async fn start_handshake(&self) -> Result<(), SslHandshakeError> {
-        let mut w = self.writer.lock().await;
-        let mut ssl_stream = self.ssl_client.lock().await;
-        let mut s = Vec::new();
-        if ssl_stream.wants_write() {
-            let l = ssl_stream.write_tls(&mut s);
-            if l.is_ok() {
-                let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
-                let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
-                w.write_all(&d2).await.map_err(|e| match e.kind() {
-                    std::io::ErrorKind::TimedOut => SslHandshakeError::Timeout,
-                    std::io::ErrorKind::UnexpectedEof => SslHandshakeError::Disconnected,
-                    _ => SslHandshakeError::Unexpected(e),
-                })?;
-                let _ = w.flush().await;
-            }
-        }
-        Ok(())
-    }
-
-    /// Continue the handshake process
-    pub async fn do_handshake(&self, data: Vec<u8>) -> Result<(), SslHandshakeError> {
-        let mut w = self.writer.lock().await;
-        let mut ssl_stream = self.ssl_client.lock().await;
-        if ssl_stream.wants_read() {
-            let mut dc = std::io::Cursor::new(data);
-            let _ = ssl_stream.read_tls(&mut dc);
-            let _ = ssl_stream.process_new_packets();
-        }
-        if ssl_stream.wants_write() {
-            let mut s = Vec::new();
-            let l = ssl_stream.write_tls(&mut s);
-            if l.is_ok() {
-                let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
-                let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
-                w.write_all(&d2).await.map_err(|e| match e.kind() {
-                    std::io::ErrorKind::TimedOut => SslHandshakeError::Timeout,
-                    std::io::ErrorKind::UnexpectedEof => SslHandshakeError::Disconnected,
-                    _ => SslHandshakeError::Unexpected(e),
-                })?;
-                let _ = w.flush().await;
-            }
-        }
-        Ok(())
-    }
-
-    /// Read a frame from the stream
+    /// Read a frame from the stream.
+    ///
+    /// TLS decryption is handled transparently by the underlying
+    /// [`tokio_rustls::client::TlsStream`].
     pub async fn read_frame(
         &self,
         fr2: &mut AndroidAutoFrameReceiver,
@@ -1534,8 +1479,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
             let mut fr = FrameHeaderReceiver::new();
             let f = fr.read(&mut *s).await?;
             let f2 = if let Some(f) = f {
-                let mut ssl_stream = self.ssl_client.lock().await;
-                fr2.read(&f, &mut *s, &mut ssl_stream).await?
+                fr2.read(&f, &mut *s).await?
             } else {
                 None
             };
@@ -1545,11 +1489,13 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
         }
     }
 
-    /// Write a frame to the stream, encrypting if necessary
+    /// Write a frame to the stream.
+    ///
+    /// TLS encryption is handled transparently by the underlying
+    /// [`tokio_rustls::client::TlsStream`].
     pub async fn write_frame(&self, f: AndroidAutoFrame) -> Result<(), FrameTransmissionError> {
         let mut s = self.writer.lock().await;
-        let mut ssl_stream = self.ssl_client.lock().await;
-        let d2: Vec<u8> = f.build_vec(Some(&mut *ssl_stream)).await;
+        let d2: Vec<u8> = f.build_vec().await;
         let a = s.write_all(&d2).await.map_err(|e| match e.kind() {
             std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
             std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
@@ -1559,14 +1505,16 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
         a
     }
 
-    /// Write a frame to the stream, encrypting if necessary
+    /// Write a sendable message to the stream.
+    ///
+    /// TLS encryption is handled transparently by the underlying
+    /// [`tokio_rustls::client::TlsStream`].
     pub async fn write_sendable(
         &self,
         f: SendableAndroidAutoMessage,
     ) -> Result<(), FrameTransmissionError> {
         let mut s = self.writer.lock().await;
-        let mut ssl_stream = self.ssl_client.lock().await;
-        let d2: Vec<u8> = f.into_frame().await.build_vec(Some(&mut *ssl_stream)).await;
+        let d2: Vec<u8> = f.into_frame().await.build_vec().await;
         let a = s.write_all(&d2).await.map_err(|e| match e.kind() {
             std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
             std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
@@ -1775,11 +1723,9 @@ async fn wifi_service<T: AndroidAutoWirelessTrait + Send + ?Sized>(
 /// Handle a single android auto device for a head unit
 async fn handle_client_generic<
     T: AndroidAutoMainTrait + ?Sized,
-    R: AsyncRead + Send + Unpin + 'static,
-    W: AsyncWrite + Send + Unpin + 'static,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 >(
-    reader: R,
-    writer: W,
+    stream: S,
     config: AndroidAutoConfiguration,
     main: &Box<T>,
 ) -> Result<(), ClientError> {
@@ -1832,10 +1778,12 @@ async fn handle_client_generic<
     let sver = Arc::new(AndroidAutoServerVerifier::new(root_store));
     ssl_client_config.dangerous().set_certificate_verifier(sver);
     let sslconfig = Arc::new(ssl_client_config);
-    let server = "idontknow.com".try_into().unwrap();
-    let ssl_client =
-        rustls::ClientConnection::new(sslconfig, server).expect("Failed to build ssl client");
-    let sm = StreamMux::new(reader, writer, ssl_client);
+    let server: rustls::pki_types::ServerName<'static> = "idontknow.com".try_into().unwrap();
+    let connector = TlsConnector::from(sslconfig);
+    let tls_stream = connector.connect(server, stream).await.map_err(|e| {
+        ClientError::from(FrameIoError::from(FrameTransmissionError::Unexpected(e)))
+    })?;
+    let sm = StreamMux::new(tls_stream);
     let message_recv = main.get_receiver().await;
     let sm2 = sm.clone();
     let kill = tokio::sync::oneshot::channel::<()>();
@@ -1916,12 +1864,11 @@ async fn handle_client_generic<
 
 async fn do_android_auto_loop<
     T: AndroidAutoMainTrait + ?Sized,
-    R: AsyncRead + Send + Unpin + 'static,
-    W: AsyncWrite + Send + Unpin + 'static,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 >(
     mut fr2: AndroidAutoFrameReceiver,
     channel_handlers: RwLockReadGuard<'_, Vec<ChannelHandler>>,
-    sm: StreamMux<R, W>,
+    sm: StreamMux<S>,
     config: AndroidAutoConfiguration,
     main: &Box<T>,
 ) -> Result<(), ClientError> {

@@ -366,12 +366,11 @@ impl ChannelHandlerTrait for ControlChannelHandler {
 
     async fn receive_data<
         T: AndroidAutoMainTrait + ?Sized,
-        U: tokio::io::AsyncRead + Unpin,
-        V: tokio::io::AsyncWrite + Unpin,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     >(
         &self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U, V>,
+        stream: &StreamMux<S>,
         config: &AndroidAutoConfiguration,
         _main: &T,
     ) -> Result<(), super::FrameIoError> {
@@ -463,14 +462,14 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         .await?;
                 }
                 AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
-                AndroidAutoControlMessage::SslHandshake(data) => {
-                    stream.do_handshake(data).await?;
-                    if !stream.is_handshaking().await {
-                        stream
-                            .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
-                            .await?;
-                        log::info!("SSL Handshake complete");
-                    }
+                AndroidAutoControlMessage::SslHandshake(_data) => {
+                    // TLS handshake is handled at the transport level by the
+                    // TlsStream before any Android Auto frames are exchanged.
+                    // Respond immediately with auth complete.
+                    stream
+                        .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
+                        .await?;
+                    log::info!("SSL Handshake complete");
                 }
                 AndroidAutoControlMessage::VersionRequest => unimplemented!(),
                 AndroidAutoControlMessage::VersionResponse {
@@ -483,7 +482,8 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         return Err(super::FrameIoError::IncompatibleVersion(major, minor));
                     }
                     log::info!("Android auto client version: {}.{}", major, minor);
-                    stream.start_handshake().await?;
+                    // The TLS handshake was already completed by TlsConnector::connect()
+                    // before the AA protocol started, so no in-band handshake is needed.
                 }
             }
         } else {

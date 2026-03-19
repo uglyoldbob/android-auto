@@ -118,12 +118,11 @@ impl ChannelHandlerTrait for InputChannelHandler {
 
     async fn receive_data<
         T: AndroidAutoMainTrait + ?Sized,
-        U: tokio::io::AsyncRead + Unpin,
-        V: tokio::io::AsyncWrite + Unpin,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     >(
         &self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U, V>,
+        stream: &StreamMux<S>,
         _config: &AndroidAutoConfiguration,
         main: &T,
     ) -> Result<(), super::FrameIoError> {
