@@ -402,7 +402,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                 AndroidAutoControlMessage::PingResponse(_) => {}
                 AndroidAutoControlMessage::PingRequest(a) => {
                     let mut m = Wifi::PingResponse::new();
-                    m.set_timestamp(a.timestamp() + 1);
+                    m.set_timestamp(a.timestamp());
                     stream
                         .write_frame(AndroidAutoControlMessage::PingResponse(m).into())
                         .await?;
