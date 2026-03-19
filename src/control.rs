@@ -462,14 +462,14 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         .await?;
                 }
                 AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
-                AndroidAutoControlMessage::SslHandshake(_data) => {
-                    // TLS handshake is handled at the transport level by the
-                    // TlsStream before any Android Auto frames are exchanged.
-                    // Respond immediately with auth complete.
-                    stream
-                        .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
-                        .await?;
-                    log::info!("SSL Handshake complete");
+                AndroidAutoControlMessage::SslHandshake(data) => {
+                    stream.do_handshake(data).await?;
+                    if !stream.is_handshaking().await {
+                        stream
+                            .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
+                            .await?;
+                        log::info!("SSL Handshake complete");
+                    }
                 }
                 AndroidAutoControlMessage::VersionRequest => unimplemented!(),
                 AndroidAutoControlMessage::VersionResponse {
@@ -482,8 +482,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         return Err(super::FrameIoError::IncompatibleVersion(major, minor));
                     }
                     log::info!("Android auto client version: {}.{}", major, minor);
-                    // The TLS handshake was already completed by TlsConnector::connect()
-                    // before the AA protocol started, so no in-band handshake is needed.
+                    stream.start_handshake().await?;
                 }
             }
         } else {
