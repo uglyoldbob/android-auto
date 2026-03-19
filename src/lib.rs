@@ -1441,8 +1441,83 @@ impl TryFrom<&AndroidAutoFrame> for AvChannelMessage {
     }
 }
 
-/// An object that allows multiple tasks to send or receive frames
+struct SslStreamThread {
+    stream: rustls::client::ClientConnection,
+    hs_started: bool,
+    hs: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+}
+
+impl SslStreamThread {
+    async fn run(mut self) {
+        if let Some(mut hs) = self.hs.take() {
+            while let Some(m) = hs.recv().await {
+                if !self.hs_started {
+                    let mut s = Vec::new();
+                    if self.stream.wants_write() {
+                        let l = self.stream.write_tls(&mut s);
+                        if l.is_ok() {
+                            let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
+                            let d2: Vec<u8> = f.build_vec(Some(&mut self.stream)).await;
+                            w.write_all(&d2).await.map_err(|e| match e.kind() {
+                                std::io::ErrorKind::TimedOut => SslHandshakeError::Timeout,
+                                std::io::ErrorKind::UnexpectedEof => SslHandshakeError::Disconnected,
+                                _ => SslHandshakeError::Unexpected(e),
+                            })?;
+                            let _ = w.flush().await;
+                        }
+                    }
+                    self.hs_started = true;
+                }
+            }
+        }
+    }
+}
+
+enum SslStream<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
+    Idle {
+        write: U,
+        read: T,
+    },
+    /// The connection is in the handshake/setup stage
+    Handshaking {
+        write: U,
+        read: T,
+    },
+    Regular {
+        write: U,
+        read: T,
+        /// Data to read
+        reader: tokio::sync::mpsc::Sender<Vec<u8>>,
+        /// Data to write
+        writer: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    }
+}
+
+impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStream<T, U> {
+    fn start_handshake(self) -> Self {
+        match self {
+            Self::Idle { write, read } => {
+                Self::Handshaking { write, read }
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    fn do_handshake(mut self, data: Vec<u8>) -> Self {
+        match self {
+            Self::Idle { write, read } => Self::Idle { write, read },
+            Self::Handshaking { write, read } => Self::Handshaking { write, read },
+            Self::Regular { write, read, reader, writer } => Self::Regular { write, read, reader, writer },
+        }
+    }
+}
+
 struct StreamMux<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
+    stream: SslStream<T, U>,
+}
+
+/// An object that allows multiple tasks to send or receive frames
+struct StreamMuxOld<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
     /// The reader for receiving frames from the android auto device
     reader: Arc<tokio::sync::Mutex<T>>,
     /// The writer for sending frames to the android auto device
@@ -1451,7 +1526,7 @@ struct StreamMux<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
     ssl_client: Arc<tokio::sync::Mutex<rustls::client::ClientConnection>>,
 }
 
-impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> Clone for StreamMux<T, U> {
+impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> Clone for StreamMuxOld<T, U> {
     fn clone(&self) -> Self {
         Self {
             reader: self.reader.clone(),
@@ -1461,7 +1536,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> Clone for StreamMux<T, U> {
     }
 }
 
-impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMux<T, U> {
+impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> StreamMuxOld<T, U> {
     /// Construct a new self
     pub fn new(sr: T, ss: U, ssl_client: rustls::client::ClientConnection) -> Self {
         Self {
