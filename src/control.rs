@@ -373,7 +373,7 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         msg: AndroidAutoFrame,
         stream: &StreamMux<U, V>,
         config: &AndroidAutoConfiguration,
-        _main: &T,
+        main: &T,
     ) -> Result<(), super::FrameIoError> {
         let msg2: Result<AndroidAutoControlMessage, String> = (&msg).try_into();
         if let Ok(msg2) = msg2 {
@@ -399,7 +399,16 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         return Err(super::FrameIoError::ShutdownRequested);
                     }
                 }
-                AndroidAutoControlMessage::PingResponse(_) => {}
+                AndroidAutoControlMessage::PingResponse(m) => {
+                    let t = m.timestamp();
+                    let delta = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_micros() as i64
+                        - t;
+                    log::info!("Ping response is {} microseconds", delta);
+                    main.ping_time_microseconds(delta).await;
+                }
                 AndroidAutoControlMessage::PingRequest(a) => {
                     let mut m = Wifi::PingResponse::new();
                     m.set_timestamp(a.timestamp());

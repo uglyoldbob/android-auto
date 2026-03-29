@@ -258,6 +258,9 @@ pub trait AndroidAutoMainTrait:
         None
     }
 
+    /// A method of receiving the ping times for the head unit
+    async fn ping_time_microseconds(&self, _micros: i64) {}
+
     /// The android auto device just connected
     async fn connect(&self);
 
@@ -1839,6 +1842,7 @@ async fn handle_client_generic<
     let message_recv = main.get_receiver().await;
     let sm2 = sm.clone();
     let kill = tokio::sync::oneshot::channel::<()>();
+    let kill2 = tokio::sync::oneshot::channel::<()>();
     let _task2 = if let Some(mut msgr) = message_recv {
         let jh: tokio::task::JoinHandle<Result<(), FrameTransmissionError>> =
             tokio::task::spawn(async move {
@@ -1855,6 +1859,32 @@ async fn handle_client_generic<
     } else {
         None
     };
+
+    let sm3 = sm.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = async {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let mut m = Wifi::PingRequest::new();
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_micros() as i64;
+                    m.set_timestamp(timestamp);
+                    if let Err(e) = sm3
+                        .write_frame(AndroidAutoControlMessage::PingRequest(m).into())
+                        .await {
+                            log::error!("Error sending ping request {:?}", e);
+                        }
+                }
+            } => {}
+            _ = kill2.1 => {
+            }
+        }
+        log::info!("Exiting pinger");
+    });
+
     log::info!("Sending channel handlers");
     {
         let mut channel_handlers: Vec<ChannelHandler> = Vec::new();
@@ -1911,6 +1941,7 @@ async fn handle_client_generic<
 
         }
     }
+    kill2.0.send(());
     Ok(())
 }
 
