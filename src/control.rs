@@ -364,14 +364,10 @@ impl ChannelHandlerTrait for ControlChannelHandler {
         None
     }
 
-    async fn receive_data<
-        T: AndroidAutoMainTrait + ?Sized,
-        U: tokio::io::AsyncRead + Unpin,
-        V: tokio::io::AsyncWrite + Unpin,
-    >(
+    async fn receive_data<T: AndroidAutoMainTrait + ?Sized>(
         &self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U, V>,
+        stream: &crate::WriteHalf,
         config: &AndroidAutoConfiguration,
         _main: &T,
     ) -> Result<(), super::FrameIoError> {
@@ -465,12 +461,6 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                 AndroidAutoControlMessage::SslAuthComplete(_) => unimplemented!(),
                 AndroidAutoControlMessage::SslHandshake(data) => {
                     stream.do_handshake(data).await?;
-                    if !stream.is_handshaking().await {
-                        stream
-                            .write_frame(AndroidAutoControlMessage::SslAuthComplete(true).into())
-                            .await?;
-                        log::info!("SSL Handshake complete");
-                    }
                 }
                 AndroidAutoControlMessage::VersionRequest => unimplemented!(),
                 AndroidAutoControlMessage::VersionResponse {

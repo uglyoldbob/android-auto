@@ -35,14 +35,10 @@ impl ChannelHandlerTrait for AvInputChannelHandler {
         Some(chan)
     }
 
-    async fn receive_data<
-        T: AndroidAutoMainTrait + ?Sized,
-        U: tokio::io::AsyncRead + Unpin,
-        V: tokio::io::AsyncWrite + Unpin,
-    >(
+    async fn receive_data<T: AndroidAutoMainTrait + ?Sized>(
         &self,
         msg: AndroidAutoFrame,
-        stream: &StreamMux<U, V>,
+        stream: &crate::WriteHalf,
         _config: &AndroidAutoConfiguration,
         main: &T,
     ) -> Result<(), super::FrameIoError> {
