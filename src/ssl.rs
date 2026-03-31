@@ -3,14 +3,15 @@
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    AndroidAutoControlMessage, AndroidAutoFrame, AndroidAutoFrameReceiver, FrameHeaderReceiver,
-    FrameReceiptError, FrameTransmissionError, SendableAndroidAutoMessage,
+    AndroidAutoControlMessage, AndroidAutoFrame, FrameDecoder, FrameReceiptError,
+    FrameTransmissionError, SendableAndroidAutoMessage,
 };
 
 pub enum SslThreadData {
     HandshakeStart,
     HandshakeData(Vec<u8>),
     PlainData(SendableAndroidAutoMessage),
+    FrameReceived(AndroidAutoFrame),
     Frame(AndroidAutoFrame),
 }
 
@@ -27,7 +28,7 @@ struct SslStreamThread<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
     hs: Option<tokio::sync::mpsc::Receiver<SslThreadData>>,
     dout: tokio::sync::mpsc::Sender<SslThreadResponse>,
     write: U,
-    read: T,
+    read: Option<T>,
 }
 
 impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
@@ -45,32 +46,14 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
             hs: Some(rcv),
             dout,
             write,
-            read,
-        }
-    }
-
-    async fn read_frame(
-        &mut self,
-        fr2: &mut AndroidAutoFrameReceiver,
-    ) -> Result<AndroidAutoFrame, FrameReceiptError> {
-        let mut fr = FrameHeaderReceiver::new();
-        let f = fr.read(&mut self.read).await?;
-        let f2 = if let Some(f) = f {
-            fr2.read(&f, &mut self.read, &mut self.stream).await?
-        } else {
-            None
-        };
-
-        if let Some(f) = f2 {
-            return Ok(f);
-        } else {
-            return Err(FrameReceiptError::NoFrameReceived);
+            read: Some(read),
         }
     }
 
     async fn handle_receive(&mut self, m: SslThreadData) -> Result<(), String> {
         match m {
             SslThreadData::HandshakeStart => {
+                log::info!("Start handshake");
                 if self.hs_started {
                     unimplemented!();
                 } else {
@@ -102,6 +85,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
                 }
             }
             SslThreadData::HandshakeData(data) => {
+                log::info!("Handshake with {} bytes of data", data.len());
                 let mut dc = std::io::Cursor::new(data);
                 self.stream
                     .read_tls(&mut dc)
@@ -128,6 +112,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
                     self.stream
                         .write_tls(&mut s)
                         .map_err(|e| format!("write_tls: {e}"))?;
+                    log::info!("Got {} bytes of handshake data", s.len());
                     {
                         let f: AndroidAutoFrame = AndroidAutoControlMessage::SslHandshake(s).into();
                         let d2: Vec<u8> = f
@@ -147,6 +132,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
                 }
             }
             SslThreadData::PlainData(f) => {
+                log::info!("Sending plain data: {:?} len {}", f.channel, f.data.len());
                 use tokio::io::AsyncWriteExt;
                 let d2: Vec<u8> = f
                     .into_frame()
@@ -164,6 +150,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
             }
             SslThreadData::Frame(f) => {
                 use tokio::io::AsyncWriteExt;
+                log::info!("Sending frame data: {:?} len {}", f.header, f.data.len());
                 let d2: Vec<u8> = f
                     .build_vec(Some(&mut self.stream))
                     .await
@@ -175,18 +162,30 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
                 });
                 let _ = self.write.flush().await;
                 a.map_err(|e| format!("{:?}", e))?;
+                log::info!("Frame data sent");
+            }
+            SslThreadData::FrameReceived(mut f) => {
+                if let Ok(_) = f.decrypt(&mut self.stream) {
+                    log::error!("Decrypted {} bytes of data", f.data.len());
+                    self.dout
+                        .send(SslThreadResponse::Data(f))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
         Ok(())
     }
 
-    async fn run(mut self) -> Result<(), String> {
+    async fn run(mut self, send: tokio::sync::mpsc::Sender<SslThreadData>) -> Result<(), String> {
         let mut hs = self
             .hs
             .take()
             .expect("SslStreamThread::run called without receiver");
 
-        let mut fr2 = AndroidAutoFrameReceiver::new();
+        let fr = FrameDecoder::default();
+        let mut reader = tokio_util::codec::FramedRead::new(self.read.take().unwrap(), fr);
+        use futures::StreamExt;
         loop {
             tokio::select! {
                 m = hs.recv() => {
@@ -202,18 +201,17 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
                         }
                     }
                 }
-                f = self.read_frame(&mut fr2) => {
+                f = reader.next() => {
                     match f {
-                        Ok(f) => {
-                            if let Err(e) = self.dout.send(SslThreadResponse::Data(f)).await {
-                                let _ = self.dout.send(SslThreadResponse::ExitError(e.to_string())).await;
-                                return Err(e.to_string());
-                            }
+                        Some(Ok(f)) => {
+                            log::info!("Received frame: {:#?}", f);
+                            send.send(SslThreadData::FrameReceived(f)).await;
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             let _ = self.dout.send(SslThreadResponse::ExitError(format!("{:?}", e))).await;
                             return Err(format!("Error receiving frame {:?}", e));
                         }
+                        None => {}
                     }
                 }
             }
@@ -279,7 +277,7 @@ impl StreamMux {
         let chan = tokio::sync::mpsc::channel(15);
         let chan2 = tokio::sync::mpsc::channel(15);
         let stream = SslStreamThread::new(chan.1, chan2.0, conn, write, read);
-        tokio::spawn(stream.run());
+        tokio::spawn(stream.run(chan.0.clone()));
         Self {
             send: chan.0,
             recv: chan2.1,

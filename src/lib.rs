@@ -52,6 +52,7 @@ use speechaudio::*;
 mod sysaudio;
 use sysaudio::*;
 mod video;
+use tokio_util::bytes::Buf;
 use video::*;
 
 #[cfg(feature = "usb")]
@@ -99,8 +100,6 @@ pub enum FrameReceiptError {
     TlsReadError(std::io::Error),
     /// An error occurred processing tls data received
     TlsProcessingError(rustls::Error),
-    /// A not a frame was received
-    NoFrameReceived,
 }
 
 /// An error that can occur when transmitting a frame
@@ -935,6 +934,105 @@ use frame_header::FrameHeaderContents;
 use crate::Bluetooth::Status;
 use crate::protobufmod::Wifi::AVMediaAckIndication;
 
+#[derive(Default)]
+struct FrameDecoder {
+    /// The frame header received
+    frame_header: Option<FrameHeader>,
+    /// The length of the frame to receive
+    len: Option<u16>,
+    /// The data received so far for a multi-frame packet
+    rx_sofar: Vec<Vec<u8>>,
+}
+
+impl tokio_util::codec::Decoder for FrameDecoder {
+    type Item = AndroidAutoFrame;
+    type Error = std::io::Error;
+
+    fn decode(
+        &mut self,
+        src: &mut tokio_util::bytes::BytesMut,
+    ) -> Result<Option<Self::Item>, Self::Error> {
+        if self.frame_header.is_none() {
+            if src.len() < 2 {
+                return Ok(None);
+            }
+            let channel = src[0];
+            let mut fhc: FrameHeaderContents =
+                FrameHeaderContents::new(false, FrameHeaderType::Single, false);
+            fhc.0 = src[1];
+            self.frame_header = Some(FrameHeader {
+                channel_id: channel,
+                frame: fhc,
+            });
+            log::info!("FH IS {:#?}", self.frame_header);
+            src.advance(2);
+        }
+        if let Some(frame_header) = &self.frame_header {
+            if self.len.is_none() {
+                log::info!(
+                    "Reading frame length {:?}",
+                    frame_header.frame.get_frame_type()
+                );
+                if frame_header.frame.get_frame_type() == FrameHeaderType::First {
+                    let mut p = [0u8; 6];
+                    if src.len() < 6 {
+                        return Ok(None);
+                    }
+                    src.copy_to_slice(&mut p);
+                    src.advance(6);
+                    let len = u16::from_be_bytes([p[0], p[1]]);
+                    self.len.replace(len);
+                } else {
+                    let mut p = [0u8; 2];
+                    if src.len() < 2 {
+                        return Ok(None);
+                    }
+                    src.copy_to_slice(&mut p);
+                    src.advance(2);
+                    let len = u16::from_be_bytes(p);
+                    self.len.replace(len);
+                }
+                log::info!("Got frame length {:?}", self.len);
+            }
+            if let Some(len) = &mut self.len {
+                *len -= 2;
+                log::info!("Reading frame length {}", len);
+                if src.len() < *len as usize {
+                    log::info!("GOT {} / {}", src.len(), len);
+                    return Ok(None);
+                }
+                log::info!("FL IS {}", len);
+                let data = src[0..*len as usize].to_vec();
+                src.advance(*len as usize);
+                self.len.take();
+                match frame_header.frame.get_frame_type() {
+                    FrameHeaderType::Single => {
+                        return Ok(Some(AndroidAutoFrame {
+                            header: self.frame_header.take().unwrap(),
+                            data,
+                        }));
+                    }
+                    FrameHeaderType::First | FrameHeaderType::Middle => {
+                        self.rx_sofar.push(data);
+                        return Ok(None);
+                    }
+                    FrameHeaderType::Last => {
+                        self.rx_sofar.push(data);
+                        let data: Vec<u8> = self.rx_sofar.clone().into_iter().flatten().collect();
+                        self.rx_sofar.clear();
+                        return Ok(Some(AndroidAutoFrame {
+                            header: self.frame_header.take().unwrap(),
+                            data,
+                        }));
+                    }
+                }
+            }
+        }
+
+        todo!();
+    }
+}
+
 /// Represents the header of a frame sent to the android auto client
 #[derive(Copy, Clone, Debug)]
 struct FrameHeader {
@@ -949,58 +1047,6 @@ impl FrameHeader {
     pub fn add_to(&self, buf: &mut Vec<u8>) {
         buf.push(self.channel_id);
         buf.push(self.frame.0);
-    }
-}
-
-/// Responsible for receiving frame headers in the the android auto protocol.
-struct FrameHeaderReceiver {
-    /// The channel id received for a frame header, if one has been received.
-    channel_id: Option<ChannelId>,
-}
-
-impl FrameHeaderReceiver {
-    /// Construct a new self
-    pub fn new() -> Self {
-        Self { channel_id: None }
-    }
-
-    /// Read a frame header from the compatible android auto device
-    /// Returns Ok(Some(p)) when a full frame header is actually received.
-    pub async fn read<T: AsyncRead + Unpin>(
-        &mut self,
-        stream: &mut T,
-    ) -> Result<Option<FrameHeader>, FrameReceiptError> {
-        if self.channel_id.is_none() {
-            let mut b = [0u8];
-            stream
-                .read_exact(&mut b)
-                .await
-                .map_err(|e| match e.kind() {
-                    std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                    std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                    _ => FrameReceiptError::UnexpectedDuringFrameChannel(e),
-                })?;
-            self.channel_id = ChannelId::try_from(b[0]).ok();
-        }
-        if let Some(channel_id) = &self.channel_id {
-            let mut b = [0u8];
-            stream
-                .read_exact(&mut b)
-                .await
-                .map_err(|e| match e.kind() {
-                    std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                    std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                    _ => FrameReceiptError::UnexpectedDuringFrameHeader(e),
-                })?;
-            let mut a = FrameHeaderContents::new(false, FrameHeaderType::Single, false);
-            a.0 = b[0];
-            let fh = FrameHeader {
-                channel_id: *channel_id,
-                frame: a,
-            };
-            return Ok(Some(fh));
-        }
-        Ok(None)
     }
 }
 
@@ -1045,6 +1091,36 @@ impl AndroidAutoFrame {
             }
         }
         m
+    }
+
+    /// Decrype the packet as received from the android auto device
+    pub fn decrypt(
+        &mut self,
+        ssl_stream: &mut rustls::client::ClientConnection,
+    ) -> Result<(), FrameReceiptError> {
+        if self.header.frame.get_encryption() {
+            let mut plain_data = vec![0u8; self.data.len()];
+            let mut cursor = Cursor::new(&self.data);
+            let mut index = 0;
+            loop {
+                let asdf = ssl_stream
+                    .read_tls(&mut cursor)
+                    .map_err(|e| FrameReceiptError::TlsReadError(e))?;
+                let _ = ssl_stream
+                    .process_new_packets()
+                    .map_err(|e| FrameReceiptError::TlsProcessingError(e))?;
+                if asdf == 0 {
+                    break;
+                }
+                if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
+                    index += l;
+                }
+            }
+            self.data = plain_data[0..index].to_vec();
+            Ok(())
+        } else {
+            Ok(())
+        }
     }
 
     /// Build a vec with the frame that is ready to send out over the connection to the compatible android auto device.
@@ -1093,129 +1169,6 @@ pub enum SslError {
     NoOutput,
     /// The ssl stream is missing
     MissingStream,
-}
-
-/// Responsible for receiving a full frame from the compatible android auto device
-struct AndroidAutoFrameReceiver {
-    /// The length of the frame to receive, if it is known yet
-    len: Option<u16>,
-    /// The data received so far for a multi-frame packet
-    rx_sofar: Vec<Vec<u8>>,
-}
-
-impl AndroidAutoFrameReceiver {
-    /// Construct a new frame receiver
-    fn new() -> Self {
-        Self {
-            len: None,
-            rx_sofar: Vec::new(),
-        }
-    }
-
-    /// Read the contents of a frame using the details specified in the header that has already been read.
-    async fn read<T: tokio::io::AsyncRead + Unpin>(
-        &mut self,
-        header: &FrameHeader,
-        stream: &mut T,
-        ssl_stream: &mut rustls::client::ClientConnection,
-    ) -> Result<Option<AndroidAutoFrame>, FrameReceiptError> {
-        if self.len.is_none() {
-            if header.frame.get_frame_type() == FrameHeaderType::First {
-                let mut p = [0u8; 6];
-                stream
-                    .read_exact(&mut p)
-                    .await
-                    .map_err(|e| match e.kind() {
-                        std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                        std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                        _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
-                    })?;
-                let len = u16::from_be_bytes([p[0], p[1]]);
-                self.len.replace(len);
-            } else {
-                let mut p = [0u8; 2];
-                stream
-                    .read_exact(&mut p)
-                    .await
-                    .map_err(|e| match e.kind() {
-                        std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                        std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                        _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
-                    })?;
-                let len = u16::from_be_bytes(p);
-                self.len.replace(len);
-            }
-        }
-
-        let decrypt = |ssl_stream: &mut rustls::client::ClientConnection,
-                       _len: u16,
-                       data_frame: Vec<u8>|
-         -> Result<Vec<u8>, FrameReceiptError> {
-            let mut plain_data = vec![0u8; data_frame.len()];
-            let mut cursor = Cursor::new(&data_frame);
-            let mut index = 0;
-            loop {
-                let asdf = ssl_stream
-                    .read_tls(&mut cursor)
-                    .map_err(|e| FrameReceiptError::TlsReadError(e))?;
-                let _ = ssl_stream
-                    .process_new_packets()
-                    .map_err(|e| FrameReceiptError::TlsProcessingError(e))?;
-                if asdf == 0 {
-                    break;
-                }
-                if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
-                    index += l;
-                }
-            }
-            Ok(plain_data[0..index].to_vec())
-        };
-
-        if let Some(len) = self.len.take() {
-            let mut data_frame = vec![0u8; len as usize];
-            stream
-                .read_exact(&mut data_frame)
-                .await
-                .map_err(|e| match e.kind() {
-                    std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                    std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                    _ => FrameReceiptError::UnexpectedDuringFrameContents(e),
-                })?;
-            let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
-                let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)?
-                } else {
-                    data_frame
-                };
-                let d = data_plain.clone();
-                Some(vec![d])
-            } else {
-                let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)?
-                } else {
-                    data_frame
-                };
-                self.rx_sofar.push(data_plain);
-                if header.frame.get_frame_type() == FrameHeaderType::Last {
-                    let d = self.rx_sofar.clone();
-                    self.rx_sofar.clear();
-                    Some(d)
-                } else {
-                    None
-                }
-            };
-            if let Some(data) = data {
-                let data: Vec<u8> = data.into_iter().flatten().collect();
-                let f = AndroidAutoFrame {
-                    header: *header,
-                    data,
-                };
-                let f = Some(f);
-                return Ok(f);
-            }
-        }
-        Ok(None)
-    }
 }
 
 #[cfg(feature = "wireless")]
@@ -1834,7 +1787,9 @@ async fn do_android_auto_loop<T: AndroidAutoMainTrait + ?Sized>(
                         .await?;
                     log::info!("SSL Handshake complete");
                 }
-                SslThreadResponse::ExitError(_) => todo!(),
+                SslThreadResponse::ExitError(e) => {
+                    log::error!("Exit error: {}", e);
+                }
             }
         }
     }

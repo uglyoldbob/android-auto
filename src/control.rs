@@ -59,7 +59,9 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
             let w = Wifi::ControlMessage::from_i32(ty as i32);
             if let Some(m) = w {
                 match m {
-                    Wifi::ControlMessage::VERSION_REQUEST => unimplemented!(),
+                    Wifi::ControlMessage::VERSION_REQUEST => {
+                        Ok(AndroidAutoControlMessage::VersionRequest)
+                    }
                     Wifi::ControlMessage::AUTH_COMPLETE => unimplemented!(),
                     Wifi::ControlMessage::MESSAGE_NONE => unimplemented!(),
                     Wifi::ControlMessage::SERVICE_DISCOVERY_RESPONSE => unimplemented!(),
@@ -462,7 +464,9 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                 AndroidAutoControlMessage::SslHandshake(data) => {
                     stream.do_handshake(data).await?;
                 }
-                AndroidAutoControlMessage::VersionRequest => unimplemented!(),
+                AndroidAutoControlMessage::VersionRequest => {
+                    log::info!("Received version request");
+                }
                 AndroidAutoControlMessage::VersionResponse {
                     major,
                     minor,
