@@ -267,10 +267,10 @@ impl StreamMux {
         tokio::spawn(stream.run());
         let chan_ssl = chan.0.clone();
         tokio::spawn(async move {
+            let mut fr = AndroidAutoFrameReceiver::new();
             loop {
                 let mut fhr = FrameHeaderReceiver::new();
                 if let Ok(Some(fh)) = fhr.read(&mut read).await {
-                    let mut fr = AndroidAutoFrameReceiver::new();
                     if let Ok(Some(f)) = fr.read(&fh, &mut read).await {
                         if f.header.frame.get_encryption() {
                             chan_ssl.send(SslThreadData::DecryptMe(f)).await;

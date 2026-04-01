@@ -1053,7 +1053,6 @@ impl AndroidAutoFrame {
             log::info!("Decrypting {} bytes of data", self.data.len());
             let tls_len = u16::from_be_bytes([self.data[3], self.data[4]]);
             log::info!("TLS LENGTH {} {}", tls_len, self.data.len());
-            assert_eq!(tls_len as usize + 5, self.data.len());
             let mut plain_data = vec![0u8; self.data.len()];
             let mut cursor = Cursor::new(&self.data);
             let mut index = 0;
@@ -1172,6 +1171,7 @@ impl AndroidAutoFrameReceiver {
         header: &FrameHeader,
         stream: &mut T,
     ) -> Result<Option<AndroidAutoFrame>, FrameReceiptError> {
+        log::info!("FRAME TYPE {:?}", header.frame.get_frame_type());
         if self.len.is_none() {
             if header.frame.get_frame_type() == FrameHeaderType::First {
                 let mut p = [0u8; 6];
@@ -1183,6 +1183,7 @@ impl AndroidAutoFrameReceiver {
                         std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                         _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
                     })?;
+                log::info!("Raw length read is {:x?}", p);
                 let len = u16::from_be_bytes([p[0], p[1]]);
                 self.len.replace(len);
             } else {
@@ -1195,13 +1196,14 @@ impl AndroidAutoFrameReceiver {
                         std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                         _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
                     })?;
+                log::info!("Raw length read is {:x?}", p);
                 let len = u16::from_be_bytes(p);
                 self.len.replace(len);
             }
         }
 
-        if let Some(len) = self.len.take() {
-            let mut data_frame = vec![0u8; len as usize];
+        if let Some(len) = &self.len {
+            let mut data_frame = vec![0u8; *len as usize];
             stream
                 .read_exact(&mut data_frame)
                 .await
@@ -1210,19 +1212,27 @@ impl AndroidAutoFrameReceiver {
                     std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                     _ => FrameReceiptError::UnexpectedDuringFrameContents(e),
                 })?;
+            log::info!("Received {} frames so far", self.rx_sofar.len());
+            log::info!("Received {} bytes this time", data_frame.len());
             let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
                 let d = data_frame.clone();
+                self.len.take();
                 Some(vec![d])
             } else {
                 self.rx_sofar.push(data_frame);
+                log::info!("Received {} frames so far", self.rx_sofar.len());
                 if header.frame.get_frame_type() == FrameHeaderType::Last {
                     let d = self.rx_sofar.clone();
                     self.rx_sofar.clear();
+                    log::info!("Received {} frames so far2", d.len());
+                    self.len.take();
                     Some(d)
                 } else {
+                    self.len.take();
                     None
                 }
             };
+            log::info!("Received {} bytes so far2", self.rx_sofar.len());
             if let Some(data) = data {
                 if data.len() > 1 {
                     log::info!("Multiple packets for this frame {}", data.len());
@@ -1231,6 +1241,7 @@ impl AndroidAutoFrameReceiver {
                     }
                 }
                 let data: Vec<u8> = data.into_iter().flatten().collect();
+                log::info!("The total frame length is {} {:x}", data.len(), data.len());
                 let f = AndroidAutoFrame {
                     header: *header,
                     data,
