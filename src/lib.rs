@@ -1771,7 +1771,7 @@ async fn handle_client_generic<
         None
     };
 
-    let sm3 = sm.clone();
+    let sm3 = sm.1.clone();
     tokio::spawn(async move {
         tokio::select! {
             _ = async {
