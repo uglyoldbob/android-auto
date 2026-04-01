@@ -942,6 +942,8 @@ struct FrameDecoder {
     len: Option<u16>,
     /// The data received so far for a multi-frame packet
     rx_sofar: Vec<Vec<u8>>,
+    /// The amount of length bytes
+    preamble: u8,
 }
 
 impl tokio_util::codec::Decoder for FrameDecoder {
@@ -979,6 +981,7 @@ impl tokio_util::codec::Decoder for FrameDecoder {
                         return Ok(None);
                     }
                     src.copy_to_slice(&mut p);
+                    self.preamble = 6;
                     src.advance(6);
                     let len = u16::from_be_bytes([p[0], p[1]]);
                     self.len.replace(len);
@@ -988,6 +991,7 @@ impl tokio_util::codec::Decoder for FrameDecoder {
                         return Ok(None);
                     }
                     src.copy_to_slice(&mut p);
+                    self.preamble = 2;
                     src.advance(2);
                     let len = u16::from_be_bytes(p);
                     self.len.replace(len);
@@ -995,7 +999,8 @@ impl tokio_util::codec::Decoder for FrameDecoder {
                 log::info!("Got frame length {:?}", self.len);
             }
             if let Some(len) = &mut self.len {
-                *len -= 2;
+                *len -= self.preamble as u16;
+                self.preamble = 0;
                 log::info!("Reading frame length {}", len);
                 if src.len() < *len as usize {
                     log::info!("GOT {} / {}", src.len(), len);
@@ -1119,6 +1124,7 @@ impl AndroidAutoFrame {
             self.data = plain_data[0..index].to_vec();
             Ok(())
         } else {
+            log::info!("Packet not encrypted");
             Ok(())
         }
     }
@@ -1745,7 +1751,9 @@ async fn handle_client_generic<
         }
     }
     log::info!("Sending version request");
-    sm.1.write_frame(AndroidAutoControlMessage::VersionRequest.into())
+    let major = VERSION.0;
+    let minor = VERSION.1;
+    sm.1.write_frame(AndroidAutoControlMessage::VersionRequest { major, minor }.into())
         .await
         .map_err(|e| {
             let e2: FrameIoError = e.into();

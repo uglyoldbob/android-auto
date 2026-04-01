@@ -11,7 +11,12 @@ use protobuf::{Enum, Message};
 #[derive(Debug)]
 pub enum AndroidAutoControlMessage {
     /// A message requesting version information.
-    VersionRequest,
+    VersionRequest {
+        /// Major version number
+        major: u16,
+        /// Minor version number
+        minor: u16,
+    },
     /// A message containing version of the compatible android auto device and compatibility status
     VersionResponse {
         /// The major version
@@ -60,7 +65,9 @@ impl TryFrom<&AndroidAutoFrame> for AndroidAutoControlMessage {
             if let Some(m) = w {
                 match m {
                     Wifi::ControlMessage::VERSION_REQUEST => {
-                        Ok(AndroidAutoControlMessage::VersionRequest)
+                        let major = u16::from_be_bytes([value.data[2], value.data[3]]);
+                        let minor = u16::from_be_bytes([value.data[4], value.data[5]]);
+                        Ok(AndroidAutoControlMessage::VersionRequest { major, minor, })
                     }
                     Wifi::ControlMessage::AUTH_COMPLETE => unimplemented!(),
                     Wifi::ControlMessage::MESSAGE_NONE => unimplemented!(),
@@ -251,12 +258,12 @@ impl From<AndroidAutoControlMessage> for AndroidAutoFrame {
                     data: m,
                 }
             }
-            AndroidAutoControlMessage::VersionRequest => {
+            AndroidAutoControlMessage::VersionRequest { major, minor } => {
                 let mut m = Vec::with_capacity(4);
                 let t = Wifi::ControlMessage::VERSION_REQUEST as u16;
                 let t = t.to_be_bytes();
-                let major = VERSION.0.to_be_bytes();
-                let minor = VERSION.1.to_be_bytes();
+                let major = major.to_be_bytes();
+                let minor = minor.to_be_bytes();
                 m.push(t[0]);
                 m.push(t[1]);
                 m.push(major[0]);
@@ -311,11 +318,20 @@ impl From<AndroidAutoControlMessage> for AndroidAutoFrame {
             }
             AndroidAutoControlMessage::ServiceDiscoveryRequest(_) => unimplemented!(),
             AndroidAutoControlMessage::VersionResponse {
-                major: _,
-                minor: _,
-                status: _,
+                major,
+                minor,
+                status,
             } => {
-                unimplemented!();
+                let major = major.to_be_bytes();
+                let minor = minor.to_be_bytes();
+                let status = status.to_be_bytes();
+                AndroidAutoFrame {
+                    header: FrameHeader {
+                        channel_id: 0,
+                        frame: FrameHeaderContents::new(false, FrameHeaderType::Single, false),
+                    },
+                    data: vec![major[0], major[1], minor[0], minor[1], status[0], status[1]],
+                }
             }
         }
     }
@@ -464,8 +480,11 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                 AndroidAutoControlMessage::SslHandshake(data) => {
                     stream.do_handshake(data).await?;
                 }
-                AndroidAutoControlMessage::VersionRequest => {
-                    log::info!("Received version request");
+                AndroidAutoControlMessage::VersionRequest { major, minor } => {
+                    log::info!("Received version request: {}.{}", major, minor);
+                    stream
+                        .write_frame(AndroidAutoControlMessage::VersionResponse { major: VERSION.0, minor: VERSION.1, status: 0 }.into())
+                        .await?;
                 }
                 AndroidAutoControlMessage::VersionResponse {
                     major,
