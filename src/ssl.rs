@@ -64,7 +64,6 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                     log::error!("Error receiving frame: {:?}", e);
                     return Err(format!("frame error {:?}", e));
                 }
-                log::info!("Parsed frame length {}", data.data.len());
                 self.dout.send(SslThreadResponse::Data(data)).await;
             }
             SslThreadData::HandshakeStart => {
@@ -83,7 +82,6 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                             .build_vec(Some(&mut self.stream))
                             .await
                             .map_err(|e| format!("{:?}", e))?;
-                        log::info!("Writing frame1 of length {}", d2.len());
                         self.write
                             .write_all(&d2)
                             .await
@@ -132,7 +130,6 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                             .build_vec(Some(&mut self.stream))
                             .await
                             .map_err(|e| format!("{:?}", e))?;
-                        log::info!("Writing frame2 of length {}", d2.len());
                         self.write
                             .write_all(&d2)
                             .await
@@ -153,7 +150,6 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                     .build_vec(Some(&mut self.stream))
                     .await
                     .map_err(|e| format!("{:?}", e))?;
-                log::info!("Writing frame3 of length {}", d2.len());
                 let a = self.write.write_all(&d2).await.map_err(|e| match e.kind() {
                     std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
                     std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
@@ -168,7 +164,6 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                     .build_vec(Some(&mut self.stream))
                     .await
                     .map_err(|e| format!("{:?}", e))?;
-                log::info!("Writing frame4 of length {}", d2.len());
                 let a = self.write.write_all(&d2).await.map_err(|e| match e.kind() {
                     std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
                     std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,

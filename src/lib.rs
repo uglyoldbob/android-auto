@@ -1050,28 +1050,20 @@ impl AndroidAutoFrame {
         ssl_stream: &mut rustls::client::ClientConnection,
     ) -> Result<(), FrameReceiptError> {
         if self.header.frame.get_encryption() {
-            log::info!("Decrypting {} bytes of data", self.data.len());
             let tls_len = u16::from_be_bytes([self.data[3], self.data[4]]);
-            log::info!("TLS LENGTH {} {}", tls_len, self.data.len());
             let mut plain_data = vec![0u8; self.data.len()];
             let mut cursor = Cursor::new(&self.data);
             let mut index = 0;
-            log::info!("Packet to process: {:x?}", self.data);
             loop {
                 let n = ssl_stream
                     .read_tls(&mut cursor)
                     .map_err(FrameReceiptError::TlsReadError)?;
                 if n == 0 {
-                    log::info!("Read_tls returned 0");
                     break;
                 }
                 let pnp = ssl_stream
                     .process_new_packets()
-                    .map_err(FrameReceiptError::TlsProcessingError);
-                if let Err(e) = &pnp {
-                    log::error!("Packet failed to process: {:x?}", self.data.len());
-                }
-                let pnp = pnp?;
+                    .map_err(FrameReceiptError::TlsProcessingError)?;
 
                 loop {
                     let amount = pnp.plaintext_bytes_to_read();
@@ -1089,7 +1081,6 @@ impl AndroidAutoFrame {
                 }
             }
             self.header.frame.set_encryption(false);
-            log::info!("Length {} became {}", self.data.len(), index);
             self.data = plain_data[0..index].to_vec();
         }
         Ok(())
@@ -1171,7 +1162,6 @@ impl AndroidAutoFrameReceiver {
         header: &FrameHeader,
         stream: &mut T,
     ) -> Result<Option<AndroidAutoFrame>, FrameReceiptError> {
-        log::info!("FRAME TYPE {:?}", header.frame.get_frame_type());
         if self.len.is_none() {
             if header.frame.get_frame_type() == FrameHeaderType::First {
                 let mut p = [0u8; 6];
@@ -1183,7 +1173,6 @@ impl AndroidAutoFrameReceiver {
                         std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                         _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
                     })?;
-                log::info!("Raw length read is {:x?}", p);
                 let len = u16::from_be_bytes([p[0], p[1]]);
                 self.len.replace(len);
             } else {
@@ -1196,7 +1185,6 @@ impl AndroidAutoFrameReceiver {
                         std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                         _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
                     })?;
-                log::info!("Raw length read is {:x?}", p);
                 let len = u16::from_be_bytes(p);
                 self.len.replace(len);
             }
@@ -1212,19 +1200,15 @@ impl AndroidAutoFrameReceiver {
                     std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                     _ => FrameReceiptError::UnexpectedDuringFrameContents(e),
                 })?;
-            log::info!("Received {} frames so far", self.rx_sofar.len());
-            log::info!("Received {} bytes this time", data_frame.len());
             let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
                 let d = data_frame.clone();
                 self.len.take();
                 Some(vec![d])
             } else {
                 self.rx_sofar.push(data_frame);
-                log::info!("Received {} frames so far", self.rx_sofar.len());
                 if header.frame.get_frame_type() == FrameHeaderType::Last {
                     let d = self.rx_sofar.clone();
                     self.rx_sofar.clear();
-                    log::info!("Received {} frames so far2", d.len());
                     self.len.take();
                     Some(d)
                 } else {
@@ -1232,16 +1216,8 @@ impl AndroidAutoFrameReceiver {
                     None
                 }
             };
-            log::info!("Received {} bytes so far2", self.rx_sofar.len());
             if let Some(data) = data {
-                if data.len() > 1 {
-                    log::info!("Multiple packets for this frame {}", data.len());
-                    for d in &data {
-                        log::info!("LEN {} {:x?}", d.len(), d);
-                    }
-                }
                 let data: Vec<u8> = data.into_iter().flatten().collect();
-                log::info!("The total frame length is {} {:x}", data.len(), data.len());
                 let f = AndroidAutoFrame {
                     header: *header,
                     data,
