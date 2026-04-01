@@ -28,6 +28,8 @@ struct SslStreamThread<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
     dout: tokio::sync::mpsc::Sender<SslThreadResponse>,
     write: U,
     read: T,
+    fhr: FrameHeaderReceiver,
+    frame_header: Option<crate::FrameHeader>,
 }
 
 impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
@@ -46,26 +48,30 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
             dout,
             write,
             read,
+            frame_header: None,
+            fhr: FrameHeaderReceiver::new(),
         }
     }
 
     async fn read_frame(
         &mut self,
         fr2: &mut AndroidAutoFrameReceiver,
-    ) -> Result<AndroidAutoFrame, FrameReceiptError> {
-        let mut fr = FrameHeaderReceiver::new();
-        let f = fr.read(&mut self.read).await?;
-        let f2 = if let Some(f) = f {
-            fr2.read(&f, &mut self.read, &mut self.stream).await?
-        } else {
-            None
-        };
-
-        if let Some(f) = f2 {
-            return Ok(f);
-        } else {
-            return Err(FrameReceiptError::NoFrameReceived);
+    ) -> Result<Option<AndroidAutoFrame>, FrameReceiptError> {
+        if self.frame_header.is_none() {
+            log::info!("Reading frame header");
+            self.frame_header = self.fhr.read(&mut self.read).await?;
         }
+        if let Some(fh) = &self.frame_header {
+            log::info!("Reading frame");
+            let f2 = fr2.read(&fh, &mut self.read, &mut self.stream).await?;
+            if f2.is_some() {
+                log::info!("Read the full frame");
+                self.frame_header.take();
+            }
+            return Ok(f2);
+        }
+        log::info!("Didnt read full frame");
+        Ok(None)
     }
 
     async fn handle_receive(&mut self, m: SslThreadData) -> Result<(), String> {
@@ -205,9 +211,11 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
                 f = self.read_frame(&mut fr2) => {
                     match f {
                         Ok(f) => {
-                            if let Err(e) = self.dout.send(SslThreadResponse::Data(f)).await {
-                                let _ = self.dout.send(SslThreadResponse::ExitError(e.to_string())).await;
-                                return Err(e.to_string());
+                            if let Some(f) = f {
+                                if let Err(e) = self.dout.send(SslThreadResponse::Data(f)).await {
+                                    let _ = self.dout.send(SslThreadResponse::ExitError(e.to_string())).await;
+                                    return Err(e.to_string());
+                                }
                             }
                         }
                         Err(e) => {

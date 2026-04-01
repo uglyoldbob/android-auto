@@ -99,8 +99,6 @@ pub enum FrameReceiptError {
     TlsReadError(std::io::Error),
     /// An error occurred processing tls data received
     TlsProcessingError(rustls::Error),
-    /// A not a frame was received
-    NoFrameReceived,
 }
 
 /// An error that can occur when transmitting a frame
@@ -1097,8 +1095,12 @@ pub enum SslError {
 
 /// Responsible for receiving a full frame from the compatible android auto device
 struct AndroidAutoFrameReceiver {
+    /// Length received so far
+    chunk_length: Vec<u8>,
     /// The length of the frame to receive, if it is known yet
     len: Option<u16>,
+    /// The data for the current frame
+    current_frame: Vec<u8>,
     /// The data received so far for a multi-frame packet
     rx_sofar: Vec<Vec<u8>>,
 }
@@ -1107,63 +1109,96 @@ impl AndroidAutoFrameReceiver {
     /// Construct a new frame receiver
     fn new() -> Self {
         Self {
+            chunk_length: Vec::new(),
             len: None,
+            current_frame: Vec::new(),
             rx_sofar: Vec::new(),
         }
     }
 
-    /// Read the contents of a frame using the details specified in the header that has already been read.
     async fn read<T: tokio::io::AsyncRead + Unpin>(
         &mut self,
         header: &FrameHeader,
         stream: &mut T,
         ssl_stream: &mut rustls::client::ClientConnection,
     ) -> Result<Option<AndroidAutoFrame>, FrameReceiptError> {
+        log::info!("doing read of frame");
+        // ── Phase 1: fill the length prefix ───────────────────────────────
+        // We stay in this phase until chunk_length is full. A short read or
+        // cancellation just leaves chunk_length partially filled; the next
+        // call continues from where we stopped.
         if self.len.is_none() {
-            if header.frame.get_frame_type() == FrameHeaderType::First {
-                let mut p = [0u8; 6];
-                stream
-                    .read_exact(&mut p)
-                    .await
-                    .map_err(|e| match e.kind() {
-                        std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                        std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                        _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
-                    })?;
-                let len = u16::from_be_bytes([p[0], p[1]]);
-                self.len.replace(len);
+            let target = if header.frame.get_frame_type() == FrameHeaderType::First {
+                6
             } else {
-                let mut p = [0u8; 2];
-                stream
-                    .read_exact(&mut p)
-                    .await
-                    .map_err(|e| match e.kind() {
-                        std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                        std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                        _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
-                    })?;
-                let len = u16::from_be_bytes(p);
-                self.len.replace(len);
+                2
+            };
+
+            while self.chunk_length.len() < target {
+                let mut buf = [0u8; 1];
+                let n = stream.read(&mut buf).await.map_err(|e| match e.kind() {
+                    std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
+                    std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
+                    _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
+                })?;
+                log::info!("Read {} bytes of length", n);
+                if n == 0 {
+                    return Err(FrameReceiptError::Disconnected);
+                }
+                self.chunk_length.push(buf[0]);
+            }
+            log::info!("length data {:x?}", self.chunk_length);
+            let len = u16::from_be_bytes([self.chunk_length[0], self.chunk_length[1]]);
+            self.chunk_length.clear();
+            // Only set self.len once fully parsed — not before.
+            self.len = Some(len);
+        }
+
+        // ── Phase 2: fill the payload ──────────────────────────────────────
+        // self.len is NOT taken here. It stays set so that a cancellation
+        // between here and the end of this block can re-enter Phase 2
+        // on the next call with the length still known.
+        let len = self.len.unwrap() as usize;
+
+        while self.current_frame.len() < len {
+            let mut buf = [0u8; 1024];
+            log::info!("Need to read {} bytes of frame", len - self.current_frame.len());
+            let n = stream.read(&mut buf).await.map_err(|e| match e.kind() {
+                std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
+                std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
+                _ => FrameReceiptError::UnexpectedDuringFrameContents(e),
+            })?;
+            log::info!("Read {} bytes of frame", n);
+            if n == 0 {
+                return Err(FrameReceiptError::Disconnected);
+            }
+            for b in &buf[0..n] {
+                self.current_frame.push(*b);
             }
         }
 
+        // ── Phase 3: decrypt + reassemble (synchronous, no await) ─────────
+        // Only reached once both buffers are fully filled. Clear state
+        // eagerly so a future re-entry starts fresh.
+        self.len = None;
+        let raw = std::mem::take(&mut self.current_frame);
+
         let decrypt = |ssl_stream: &mut rustls::client::ClientConnection,
-                       _len: u16,
                        data_frame: Vec<u8>|
          -> Result<Vec<u8>, FrameReceiptError> {
             let mut plain_data = vec![0u8; data_frame.len()];
             let mut cursor = Cursor::new(&data_frame);
             let mut index = 0;
             loop {
-                let asdf = ssl_stream
+                let n = ssl_stream
                     .read_tls(&mut cursor)
-                    .map_err(|e| FrameReceiptError::TlsReadError(e))?;
-                let _ = ssl_stream
-                    .process_new_packets()
-                    .map_err(|e| FrameReceiptError::TlsProcessingError(e))?;
-                if asdf == 0 {
+                    .map_err(FrameReceiptError::TlsReadError)?;
+                if n == 0 {
                     break;
                 }
+                let _ = ssl_stream
+                    .process_new_packets()
+                    .map_err(FrameReceiptError::TlsProcessingError)?;
                 if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
                     index += l;
                 }
@@ -1171,50 +1206,32 @@ impl AndroidAutoFrameReceiver {
             Ok(plain_data[0..index].to_vec())
         };
 
-        if let Some(len) = self.len.take() {
-            let mut data_frame = vec![0u8; len as usize];
-            stream
-                .read_exact(&mut data_frame)
-                .await
-                .map_err(|e| match e.kind() {
-                    std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                    std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                    _ => FrameReceiptError::UnexpectedDuringFrameContents(e),
-                })?;
-            let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
-                let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)?
-                } else {
-                    data_frame
-                };
-                let d = data_plain.clone();
-                Some(vec![d])
-            } else {
-                let data_plain = if header.frame.get_encryption() {
-                    decrypt(ssl_stream, len, data_frame)?
-                } else {
-                    data_frame
-                };
-                self.rx_sofar.push(data_plain);
-                if header.frame.get_frame_type() == FrameHeaderType::Last {
-                    let d = self.rx_sofar.clone();
-                    self.rx_sofar.clear();
-                    Some(d)
-                } else {
-                    None
-                }
-            };
-            if let Some(data) = data {
-                let data: Vec<u8> = data.into_iter().flatten().collect();
-                let f = AndroidAutoFrame {
-                    header: *header,
-                    data,
-                };
-                let f = Some(f);
-                return Ok(f);
+        let frame_type = header.frame.get_frame_type();
+        let encrypted = header.frame.get_encryption();
+
+        let plain = if encrypted {
+            decrypt(ssl_stream, raw)?
+        } else {
+            raw
+        };
+
+        let complete: Option<Vec<Vec<u8>>> = match frame_type {
+            FrameHeaderType::Single => Some(vec![plain]),
+            FrameHeaderType::Last => {
+                self.rx_sofar.push(plain);
+                Some(std::mem::take(&mut self.rx_sofar))
             }
-        }
-        Ok(None)
+            _ => {
+                // First or Middle: accumulate and signal not-yet-complete.
+                self.rx_sofar.push(plain);
+                None
+            }
+        };
+
+        Ok(complete.map(|chunks| AndroidAutoFrame {
+            header: *header,
+            data: chunks.into_iter().flatten().collect(),
+        }))
     }
 }
 
@@ -1834,7 +1851,10 @@ async fn do_android_auto_loop<T: AndroidAutoMainTrait + ?Sized>(
                         .await?;
                     log::info!("SSL Handshake complete");
                 }
-                SslThreadResponse::ExitError(_) => todo!(),
+                SslThreadResponse::ExitError(e) => {
+                    log::error!("The error for exit is {}", e);
+                    todo!();
+                }
             }
         }
     }
