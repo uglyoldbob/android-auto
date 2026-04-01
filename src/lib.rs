@@ -1045,6 +1045,35 @@ impl AndroidAutoFrame {
         m
     }
 
+    async fn decrypt(
+        &mut self,
+        ssl_stream: &mut rustls::client::ClientConnection,
+    ) -> Result<(), FrameReceiptError> {
+        if self.header.frame.get_encryption() {
+            log::info!("Decrypting {} bytes of data", self.data.len());
+            let mut plain_data = vec![0u8; self.data.len()];
+            let mut cursor = Cursor::new(&self.data);
+            let mut index = 0;
+            loop {
+                let n = ssl_stream
+                    .read_tls(&mut cursor)
+                    .map_err(FrameReceiptError::TlsReadError)?;
+                if n == 0 {
+                    break;
+                }
+                let _ = ssl_stream
+                    .process_new_packets()
+                    .map_err(FrameReceiptError::TlsProcessingError)?;
+                if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
+                    index += l;
+                }
+            }
+            self.header.frame.set_encryption(false);
+            self.data = plain_data;
+        }
+        Ok(())
+    }
+
     /// Build a vec with the frame that is ready to send out over the connection to the compatible android auto device.
     /// If necessary, the data will be encrypted.
     async fn build_vec(
@@ -1120,7 +1149,6 @@ impl AndroidAutoFrameReceiver {
         &mut self,
         header: &FrameHeader,
         stream: &mut T,
-        ssl_stream: &mut rustls::client::ClientConnection,
     ) -> Result<Option<AndroidAutoFrame>, FrameReceiptError> {
         log::info!("doing read of frame");
         // ── Phase 1: fill the length prefix ───────────────────────────────
@@ -1162,7 +1190,10 @@ impl AndroidAutoFrameReceiver {
 
         while self.current_frame.len() < len {
             let mut buf = [0u8; 1024];
-            log::info!("Need to read {} bytes of frame", len - self.current_frame.len());
+            log::info!(
+                "Need to read {} bytes of frame",
+                len - self.current_frame.len()
+            );
             let n = stream.read(&mut buf).await.map_err(|e| match e.kind() {
                 std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
                 std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
@@ -1183,47 +1214,17 @@ impl AndroidAutoFrameReceiver {
         self.len = None;
         let raw = std::mem::take(&mut self.current_frame);
 
-        let decrypt = |ssl_stream: &mut rustls::client::ClientConnection,
-                       data_frame: Vec<u8>|
-         -> Result<Vec<u8>, FrameReceiptError> {
-            let mut plain_data = vec![0u8; data_frame.len()];
-            let mut cursor = Cursor::new(&data_frame);
-            let mut index = 0;
-            loop {
-                let n = ssl_stream
-                    .read_tls(&mut cursor)
-                    .map_err(FrameReceiptError::TlsReadError)?;
-                if n == 0 {
-                    break;
-                }
-                let _ = ssl_stream
-                    .process_new_packets()
-                    .map_err(FrameReceiptError::TlsProcessingError)?;
-                if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
-                    index += l;
-                }
-            }
-            Ok(plain_data[0..index].to_vec())
-        };
-
         let frame_type = header.frame.get_frame_type();
-        let encrypted = header.frame.get_encryption();
-
-        let plain = if encrypted {
-            decrypt(ssl_stream, raw)?
-        } else {
-            raw
-        };
 
         let complete: Option<Vec<Vec<u8>>> = match frame_type {
-            FrameHeaderType::Single => Some(vec![plain]),
+            FrameHeaderType::Single => Some(vec![raw]),
             FrameHeaderType::Last => {
-                self.rx_sofar.push(plain);
+                self.rx_sofar.push(raw);
                 Some(std::mem::take(&mut self.rx_sofar))
             }
             _ => {
                 // First or Middle: accumulate and signal not-yet-complete.
-                self.rx_sofar.push(plain);
+                self.rx_sofar.push(raw);
                 None
             }
         };

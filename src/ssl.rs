@@ -7,38 +7,45 @@ use crate::{
     FrameReceiptError, FrameTransmissionError, SendableAndroidAutoMessage,
 };
 
+/// A message sent to the ssl thread
 pub enum SslThreadData {
+    /// The handshake is starting
     HandshakeStart,
+    /// Data to send out for handshake process
     HandshakeData(Vec<u8>),
+    /// A message to write to the writer
     PlainData(SendableAndroidAutoMessage),
+    /// A frame to write to the writer
     Frame(AndroidAutoFrame),
+    /// A message to decrypt
+    DecryptMe(AndroidAutoFrame),
 }
 
+/// The response from the ssl thread
 pub enum SslThreadResponse {
+    /// A decrypted frame received from the read object
     Data(AndroidAutoFrame),
+    /// The handshake is complete
     HandshakeComplete,
+    /// The ssl thread is exiting with an error
     ExitError(String),
 }
 
-struct SslStreamThread<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
+struct SslStreamThread<U: AsyncWrite + Unpin> {
     stream: rustls::client::ClientConnection,
     hs_started: bool,
     hs_completed: bool,
     hs: Option<tokio::sync::mpsc::Receiver<SslThreadData>>,
     dout: tokio::sync::mpsc::Sender<SslThreadResponse>,
     write: U,
-    read: T,
-    fhr: FrameHeaderReceiver,
-    frame_header: Option<crate::FrameHeader>,
 }
 
-impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
+impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
     fn new(
         rcv: tokio::sync::mpsc::Receiver<SslThreadData>,
         dout: tokio::sync::mpsc::Sender<SslThreadResponse>,
         conn: rustls::client::ClientConnection,
         write: U,
-        read: T,
     ) -> Self {
         Self {
             stream: conn,
@@ -47,35 +54,15 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
             hs: Some(rcv),
             dout,
             write,
-            read,
-            frame_header: None,
-            fhr: FrameHeaderReceiver::new(),
         }
-    }
-
-    async fn read_frame(
-        &mut self,
-        fr2: &mut AndroidAutoFrameReceiver,
-    ) -> Result<Option<AndroidAutoFrame>, FrameReceiptError> {
-        if self.frame_header.is_none() {
-            log::info!("Reading frame header");
-            self.frame_header = self.fhr.read(&mut self.read).await?;
-        }
-        if let Some(fh) = &self.frame_header {
-            log::info!("Reading frame");
-            let f2 = fr2.read(&fh, &mut self.read, &mut self.stream).await?;
-            if f2.is_some() {
-                log::info!("Read the full frame");
-                self.frame_header.take();
-            }
-            return Ok(f2);
-        }
-        log::info!("Didnt read full frame");
-        Ok(None)
     }
 
     async fn handle_receive(&mut self, m: SslThreadData) -> Result<(), String> {
         match m {
+            SslThreadData::DecryptMe(mut data) => {
+                data.decrypt(&mut self.stream).await;
+                self.dout.send(SslThreadResponse::Data(data)).await;
+            }
             SslThreadData::HandshakeStart => {
                 if self.hs_started {
                     unimplemented!();
@@ -191,38 +178,19 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
             .hs
             .take()
             .expect("SslStreamThread::run called without receiver");
-
-        let mut fr2 = AndroidAutoFrameReceiver::new();
         loop {
-            tokio::select! {
-                m = hs.recv() => {
-                    match m {
-                        Some(m) => {
-                            if let Err(e) = self.handle_receive(m).await {
-                                let _ = self.dout.send(SslThreadResponse::ExitError(e.to_string())).await;
-                                return Err(e);
-                            }
-                        }
-                        None => {
-                            return Ok(());
-                        }
+            match hs.recv().await {
+                Some(m) => {
+                    if let Err(e) = self.handle_receive(m).await {
+                        let _ = self
+                            .dout
+                            .send(SslThreadResponse::ExitError(e.to_string()))
+                            .await;
+                        return Err(e);
                     }
                 }
-                f = self.read_frame(&mut fr2) => {
-                    match f {
-                        Ok(f) => {
-                            if let Some(f) = f {
-                                if let Err(e) = self.dout.send(SslThreadResponse::Data(f)).await {
-                                    let _ = self.dout.send(SslThreadResponse::ExitError(e.to_string())).await;
-                                    return Err(e.to_string());
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let _ = self.dout.send(SslThreadResponse::ExitError(format!("{:?}", e))).await;
-                            return Err(format!("Error receiving frame {:?}", e));
-                        }
-                    }
+                None => {
+                    return Ok(());
                 }
             }
         }
@@ -282,12 +250,29 @@ impl StreamMux {
     pub fn new<T: AsyncRead + Send + Unpin + 'static, U: AsyncWrite + Send + Unpin + 'static>(
         conn: rustls::client::ClientConnection,
         write: U,
-        read: T,
+        mut read: T,
     ) -> Self {
         let chan = tokio::sync::mpsc::channel(15);
         let chan2 = tokio::sync::mpsc::channel(15);
-        let stream = SslStreamThread::new(chan.1, chan2.0, conn, write, read);
+        let chanw = chan2.0.clone();
+        let stream = SslStreamThread::new(chan.1, chan2.0, conn, write);
         tokio::spawn(stream.run());
+        let chan_ssl = chan.0.clone();
+        tokio::spawn(async move {
+            loop {
+                let mut fhr = FrameHeaderReceiver::new();
+                if let Ok(Some(fh)) = fhr.read(&mut read).await {
+                    let mut fr = AndroidAutoFrameReceiver::new();
+                    if let Ok(Some(f)) = fr.read(&fh, &mut read).await {
+                        if f.header.frame.get_encryption() {
+                            chan_ssl.send(SslThreadData::DecryptMe(f)).await;
+                        } else {
+                            chanw.send(SslThreadResponse::Data(f)).await;
+                        }
+                    }
+                }
+            }
+        });
         Self {
             send: chan.0,
             recv: chan2.1,
