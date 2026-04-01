@@ -402,7 +402,6 @@ impl ChannelHandlerTrait for ControlChannelHandler {
                         .unwrap()
                         .as_micros() as i64
                         - t;
-                    log::info!("Ping response is {} microseconds", delta);
                     main.ping_time_microseconds(delta).await;
                 }
                 AndroidAutoControlMessage::PingRequest(a) => {

@@ -272,7 +272,9 @@ pub trait AndroidAutoMainTrait:
     }
 
     /// A method of receiving the ping times for the head unit
-    async fn ping_time_microseconds(&self, _micros: i64) {}
+    async fn ping_time_microseconds(&self, micros: i64) {
+        log::info!("Ping response is {} microseconds", micros);
+    }
 
     /// The android auto device just connected
     async fn connect(&self);
