@@ -942,8 +942,6 @@ struct FrameDecoder {
     len: Option<u16>,
     /// The data received so far for a multi-frame packet
     rx_sofar: Vec<Vec<u8>>,
-    /// The amount of length bytes
-    preamble: u8,
 }
 
 impl tokio_util::codec::Decoder for FrameDecoder {
@@ -966,23 +964,16 @@ impl tokio_util::codec::Decoder for FrameDecoder {
                 channel_id: channel,
                 frame: fhc,
             });
-            log::info!("FH IS {:#?}", self.frame_header);
             src.advance(2);
         }
         if let Some(frame_header) = &self.frame_header {
             if self.len.is_none() {
-                log::info!(
-                    "Reading frame length {:?}",
-                    frame_header.frame.get_frame_type()
-                );
                 if frame_header.frame.get_frame_type() == FrameHeaderType::First {
                     let mut p = [0u8; 6];
                     if src.len() < 6 {
                         return Ok(None);
                     }
                     src.copy_to_slice(&mut p);
-                    self.preamble = 6;
-                    src.advance(6);
                     let len = u16::from_be_bytes([p[0], p[1]]);
                     self.len.replace(len);
                 } else {
@@ -991,22 +982,14 @@ impl tokio_util::codec::Decoder for FrameDecoder {
                         return Ok(None);
                     }
                     src.copy_to_slice(&mut p);
-                    self.preamble = 2;
-                    src.advance(2);
                     let len = u16::from_be_bytes(p);
                     self.len.replace(len);
                 }
-                log::info!("Got frame length {:?}", self.len);
             }
             if let Some(len) = &mut self.len {
-                *len -= self.preamble as u16;
-                self.preamble = 0;
-                log::info!("Reading frame length {}", len);
                 if src.len() < *len as usize {
-                    log::info!("GOT {} / {}", src.len(), len);
                     return Ok(None);
                 }
-                log::info!("FL IS {}", len);
                 let data = src[0..*len as usize].to_vec();
                 src.advance(*len as usize);
                 self.len.take();
@@ -1124,7 +1107,6 @@ impl AndroidAutoFrame {
             self.data = plain_data[0..index].to_vec();
             Ok(())
         } else {
-            log::info!("Packet not encrypted");
             Ok(())
         }
     }

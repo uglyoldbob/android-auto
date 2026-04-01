@@ -132,7 +132,6 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
                 }
             }
             SslThreadData::PlainData(f) => {
-                log::info!("Sending plain data: {:?} len {}", f.channel, f.data.len());
                 use tokio::io::AsyncWriteExt;
                 let d2: Vec<u8> = f
                     .into_frame()
@@ -150,7 +149,6 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
             }
             SslThreadData::Frame(f) => {
                 use tokio::io::AsyncWriteExt;
-                log::info!("Sending frame data: {:?} len {}", f.header, f.data.len());
                 let d2: Vec<u8> = f
                     .build_vec(Some(&mut self.stream))
                     .await
@@ -162,11 +160,9 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
                 });
                 let _ = self.write.flush().await;
                 a.map_err(|e| format!("{:?}", e))?;
-                log::info!("Frame data sent");
             }
             SslThreadData::FrameReceived(mut f) => {
                 if let Ok(_) = f.decrypt(&mut self.stream) {
-                    log::error!("Decrypted {} bytes of data", f.data.len());
                     self.dout
                         .send(SslThreadResponse::Data(f))
                         .await
@@ -204,7 +200,6 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> SslStreamThread<T, U> {
                 f = reader.next() => {
                     match f {
                         Some(Ok(f)) => {
-                            log::info!("Received frame: {:#?}", f);
                             send.send(SslThreadData::FrameReceived(f)).await;
                         }
                         Some(Err(e)) => {
