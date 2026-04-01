@@ -1058,18 +1058,23 @@ impl AndroidAutoFrame {
                 let n = ssl_stream
                     .read_tls(&mut cursor)
                     .map_err(FrameReceiptError::TlsReadError)?;
+                let pnp = ssl_stream
+                    .process_new_packets()
+                    .map_err(FrameReceiptError::TlsProcessingError);
+                if let Err(e) = &pnp {
+                    log::error!("Error processing data: {:?}", e);
+                    log::info!("Packet processing: {:x?}", self.data);
+                }
+                pnp?;
                 if n == 0 {
                     break;
                 }
-                let _ = ssl_stream
-                    .process_new_packets()
-                    .map_err(FrameReceiptError::TlsProcessingError)?;
                 if let Ok(l) = ssl_stream.reader().read(&mut plain_data[index..]) {
                     index += l;
                 }
             }
             self.header.frame.set_encryption(false);
-            self.data = plain_data;
+            self.data = plain_data[0..index].to_vec();
         }
         Ok(())
     }

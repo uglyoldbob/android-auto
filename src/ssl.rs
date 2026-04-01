@@ -60,7 +60,10 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
     async fn handle_receive(&mut self, m: SslThreadData) -> Result<(), String> {
         match m {
             SslThreadData::DecryptMe(mut data) => {
-                data.decrypt(&mut self.stream).await;
+                if let Err(e) = data.decrypt(&mut self.stream).await {
+                    log::error!("Error receiving frame: {:?}", e);
+                    return Err(format!("frame error {:?}", e));
+                }
                 self.dout.send(SslThreadResponse::Data(data)).await;
             }
             SslThreadData::HandshakeStart => {
@@ -79,6 +82,7 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                             .build_vec(Some(&mut self.stream))
                             .await
                             .map_err(|e| format!("{:?}", e))?;
+                        log::info!("Writing frame of length {}", d2.len());
                         self.write
                             .write_all(&d2)
                             .await
@@ -127,6 +131,7 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                             .build_vec(Some(&mut self.stream))
                             .await
                             .map_err(|e| format!("{:?}", e))?;
+                        log::info!("Writing frame of length {}", d2.len());
                         self.write
                             .write_all(&d2)
                             .await
@@ -147,6 +152,7 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                     .build_vec(Some(&mut self.stream))
                     .await
                     .map_err(|e| format!("{:?}", e))?;
+                log::info!("Writing frame of length {}", d2.len());
                 let a = self.write.write_all(&d2).await.map_err(|e| match e.kind() {
                     std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
                     std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
@@ -161,6 +167,7 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                     .build_vec(Some(&mut self.stream))
                     .await
                     .map_err(|e| format!("{:?}", e))?;
+                log::info!("Writing frame of length {}", d2.len());
                 let a = self.write.write_all(&d2).await.map_err(|e| match e.kind() {
                     std::io::ErrorKind::TimedOut => FrameTransmissionError::Timeout,
                     std::io::ErrorKind::UnexpectedEof => FrameTransmissionError::Disconnected,
