@@ -47,10 +47,12 @@ impl android_auto::AndroidAutoWirelessTrait for AndroidAuto {
     async fn setup_bluetooth_profile(
         &self,
         suggestions: &bluetooth_rust::BluetoothRfcommProfileSettings,
-    ) -> Result<bluetooth_rust::BluetoothRfcommProfile, String> {
-        self.bluetooth
-            .register_rfcomm_profile(suggestions.clone())
-            .await
+    ) -> Result<bluetooth_rust::BluetoothRfcommProfileAsync, String> {
+        if let Some(b) = self.bluetooth.supports_async() {
+            b.register_rfcomm_profile(suggestions.clone()).await
+        } else {
+            Err("Async not supported".to_string())
+        }
     }
 
     /// Returns wifi details
@@ -754,15 +756,23 @@ impl AndroidAutoContainer {
                     let bluechan = tokio::sync::mpsc::channel(5);
                     let mut bluetooth = bluetooth_rust::BluetoothAdapterBuilder::new();
                     bluetooth.with_sender(bluechan.0);
-                    let bluetooth =
-                        Arc::new(bluetooth.build().await.expect("Could not open bluetooth"));
+                    let bluetooth = Arc::new(
+                        bluetooth
+                            .async_build()
+                            .await
+                            .expect("Could not open bluetooth"),
+                    );
                     (bluechan.1, bluetooth)
                 };
                 #[cfg(feature = "wireless")]
-                bluetooth
-                    .set_discoverable(true)
-                    .await
-                    .expect("Failed to make bluetooth discoverable");
+                {
+                    if let Some(bluetooth) = bluetooth.supports_async() {
+                        bluetooth
+                            .set_discoverable(true)
+                            .await
+                            .expect("Failed to make bluetooth discoverable");
+                    }
+                }
 
                 #[cfg(feature = "wireless")]
                 tokio::spawn(async move {
@@ -788,16 +798,25 @@ impl AndroidAutoContainer {
                 });
 
                 #[cfg(feature = "wireless")]
-                let blue_addresses: Vec<[u8; 6]> = bluetooth.addresses().await;
+                let blue_addresses: Vec<bluetooth_rust::BluetoothAdapterAddress> = {
+                    if let Some(bluetooth) = bluetooth.supports_async() {
+                        bluetooth.addresses().await
+                    } else {
+                        panic!("Async not supported");
+                    }
+                };
                 #[cfg(feature = "wireless")]
                 let bluetooth_address = blue_addresses
                     .first()
-                    .map(|b| {
-                        let a = format!(
-                            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-                            b[0], b[1], b[2], b[3], b[4], b[5]
-                        );
-                        a
+                    .map(|b| match b {
+                        bluetooth_rust::BluetoothAdapterAddress::String(s) => s.to_owned(),
+                        bluetooth_rust::BluetoothAdapterAddress::Byte(b) => {
+                            let a = format!(
+                                "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                                b[0], b[1], b[2], b[3], b[4], b[5]
+                            );
+                            a
+                        }
                     })
                     .expect("No bluetooth hardware found");
 

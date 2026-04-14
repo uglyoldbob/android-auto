@@ -20,7 +20,7 @@ use ::protobuf::Message;
 use Wifi::ChannelDescriptor;
 #[cfg(feature = "wireless")]
 use bluetooth_rust::{
-    BluetoothRfcommConnectableTrait, BluetoothRfcommProfileTrait, BluetoothStream,
+    BluetoothRfcommConnectableAsyncTrait, BluetoothRfcommProfileAsyncTrait, BluetoothStream,
 };
 use futures::StreamExt;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
@@ -543,7 +543,7 @@ pub trait AndroidAutoWirelessTrait: AndroidAutoMainTrait {
     async fn setup_bluetooth_profile(
         &self,
         suggestions: &bluetooth_rust::BluetoothRfcommProfileSettings,
-    ) -> Result<bluetooth_rust::BluetoothRfcommProfile, String>;
+    ) -> Result<bluetooth_rust::BluetoothRfcommProfileAsync, String>;
 
     /// Returns wifi details
     fn get_wifi_details(&self) -> NetworkInformation;
@@ -1648,14 +1648,16 @@ async fn handle_bluetooth_client(
 #[cfg(feature = "wireless")]
 /// Runs the bluetooth service that allows wireless android auto connections to start up
 async fn bluetooth_service(
-    mut profile: bluetooth_rust::BluetoothRfcommProfile,
+    mut profile: bluetooth_rust::BluetoothRfcommProfileAsync,
     wireless: Arc<dyn AndroidAutoWirelessTrait>,
 ) -> Result<(), String> {
     log::info!("Starting bluetooth service");
     loop {
         if let Ok(c) = profile.connectable().await {
             let network2 = wireless.get_wifi_details();
-            let mut stream = c.accept().await?;
+            use bluetooth_rust::BluetoothRfcommConnectableAsyncTrait;
+            let mut stream =
+                bluetooth_rust::BluetoothRfcommConnectableAsyncTrait::accept(c).await?;
             let e = handle_bluetooth_client(&mut stream, &network2).await;
             log::info!("Bluetooth client disconnected: {:?}", e);
         }
