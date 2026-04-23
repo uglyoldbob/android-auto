@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "android-auto"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -663,16 +663,18 @@ dependencies = [
 
 [[package]]
 name = "bluetooth-rust"
-version = "0.3.6"
+version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9222bfc1b9c651f7d2983355bafa4f3da8fbe63b3fa778e5a58d25591277360"
+checksum = "6a33fcc36fc3b10902eba8cf595c5ead89f16a2e55c8e63ea2fca8fa3ba7ceb2"
 dependencies = [
  "async-trait",
  "bluer",
+ "bytes",
  "enum_dispatch",
  "futures",
  "jni 0.21.1",
  "jni-min-helper",
+ "libc",
  "log",
  "ouroboros",
  "serde",
@@ -2218,9 +2220,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.183"
+version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libdbus-sys"

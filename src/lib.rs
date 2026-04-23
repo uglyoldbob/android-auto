@@ -1658,7 +1658,7 @@ async fn bluetooth_service(
             use bluetooth_rust::BluetoothRfcommConnectableAsyncTrait;
             let mut stream =
                 bluetooth_rust::BluetoothRfcommConnectableAsyncTrait::accept(c).await?;
-            let e = handle_bluetooth_client(&mut stream, &network2).await;
+            let e = handle_bluetooth_client(&mut stream.0, &network2).await;
             log::info!("Bluetooth client disconnected: {:?}", e);
         }
     }
