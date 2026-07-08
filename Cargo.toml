@@ -28,12 +28,10 @@ protobuf-codegen = "3.7.2"
 [dev-dependencies]
 cpal = "0.17.3"
 eframe = "0.33.3"
-nmrs = "2.0.1"
+nmrs = "3.4.0"
 openh264 = "0.9.3"
 ringbuf = "0.4.8"
 simple_logger = "5.2.0"
-zbus = "5.13.2"
-zvariant = "5.9.2"
 
 [features]
 default = ["usb"]
