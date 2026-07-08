@@ -14,16 +14,10 @@ mod nmrs_extensions;
 
 #[cfg(feature = "wireless")]
 /// Returns the first wifi interface found on the system
-async fn get_wifi_interface(nmrs: &nmrs::NetworkManager) -> Option<nmrs::Device> {
-    if let Ok(devs) = nmrs.list_wireless_devices().await {
-        for dev in devs {
-            if dev.device_type == nmrs::DeviceType::Wifi {
-                log::info!("Found wifi device {:?}", dev);
-                return Some(dev);
-            }
-        }
-    }
-    None
+async fn get_wifi_interface(nmrs: &nmrs::NetworkManager) -> Option<nmrs::WifiDevice> {
+    let dev = nmrs.list_wifi_devices().await.ok()?.into_iter().next()?;
+    log::info!("Found wifi device {:?}", dev);
+    Some(dev)
 }
 
 type AudioProducer = ringbuf::HeapProd<i16>;
@@ -744,9 +738,10 @@ impl AndroidAutoContainer {
                 let hotspot_psk = "qwertyuiop".to_string();
                 #[cfg(feature = "wireless")]
                 nmrs_extensions::start_hotspot(
-                    hotspot_ssid.clone(),
-                    hotspot_psk.clone(),
-                    &wifi_dev.path,
+                    &wifi,
+                    &hotspot_ssid,
+                    &hotspot_psk,
+                    &wifi_dev.interface,
                 )
                 .await
                 .expect("Failed to build wifi hotspot");
@@ -833,7 +828,7 @@ impl AndroidAutoContainer {
                     android_auto::NetworkInformation {
                         ssid: hotspot_ssid,
                         psk: hotspot_psk,
-                        mac_addr: wifi_dev.identity.current_mac.clone(),
+                        mac_addr: wifi_dev.hw_address.clone(),
                         ip: "10.42.0.1".to_string(),
                         port: 5277,
                         security_mode: android_auto::Bluetooth::SecurityMode::WPA2_PERSONAL,
