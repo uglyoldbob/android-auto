@@ -33,6 +33,86 @@ struct AndroidAutoInner {
     sys_stream: Option<(AudioProducer, cpal::Stream)>,
     speech_stream: Option<(AudioProducer, cpal::Stream)>,
     input_stream: Option<cpal::Stream>,
+    /// Fallback output used for any channel whose fixed-format stream could not be opened.
+    mixer: Option<Arc<Mixer>>,
+    mixer_stream: Option<cpal::Stream>,
+}
+
+/// Output path for platforms whose default device does not offer i16 at the channel's native
+/// rate (CoreAudio on macOS exposes only f32 at the device rate, so all three fixed-format
+/// streams above fail to open and the phone's audio is silently discarded). Every channel is
+/// converted to mono f32 at the device rate with linear interpolation and drained by a single
+/// output stream. Not real-time safe; adequate for the example.
+struct Mixer {
+    queue: std::sync::Mutex<std::collections::VecDeque<f32>>,
+    device_rate: u32,
+}
+
+impl Mixer {
+    fn push(&self, pcm: &[u8], src_rate: u32, src_channels: usize) {
+        let frames: Vec<f32> = pcm
+            .chunks_exact(2 * src_channels)
+            .map(|f| {
+                let mut acc = 0f32;
+                for c in 0..src_channels {
+                    acc += i16::from_le_bytes([f[2 * c], f[2 * c + 1]]) as f32 / 32768.0;
+                }
+                acc / src_channels as f32
+            })
+            .collect();
+        if frames.is_empty() {
+            return;
+        }
+        let ratio = self.device_rate as f64 / src_rate as f64;
+        let out_len = (frames.len() as f64 * ratio) as usize;
+        let mut q = self.queue.lock().unwrap();
+        for i in 0..out_len {
+            let pos = i as f64 / ratio;
+            let i0 = pos.floor() as usize;
+            let i1 = (i0 + 1).min(frames.len() - 1);
+            let t = (pos - i0 as f64) as f32;
+            q.push_back(frames[i0] * (1.0 - t) + frames[i1] * t);
+        }
+        // Bound the backlog at three seconds so a stalled callback cannot grow it forever.
+        let cap = self.device_rate as usize * 3;
+        while q.len() > cap {
+            q.pop_front();
+        }
+    }
+}
+
+/// Open one output stream in the device's default format and return it with its mixer.
+fn open_fallback_output(dev: &cpal::Device) -> Option<(Arc<Mixer>, cpal::Stream)> {
+    let cfg = dev.default_output_config().ok()?;
+    let mixer = Arc::new(Mixer {
+        queue: Default::default(),
+        device_rate: cfg.sample_rate(),
+    });
+    let ch = cfg.channels() as usize;
+    let m2 = mixer.clone();
+    let stream = dev
+        .build_output_stream(
+            &cfg.config(),
+            move |out: &mut [f32], _| {
+                let mut q = m2.queue.lock().unwrap();
+                for frame in out.chunks_mut(ch) {
+                    let v = q.pop_front().unwrap_or(0.0);
+                    for s in frame.iter_mut() {
+                        *s = v;
+                    }
+                }
+            },
+            |e| log::error!("Fallback audio output error: {:?}", e),
+            None,
+        )
+        .ok()?;
+    log::info!(
+        "Fallback audio output opened at {} Hz, {} channels, {:?}",
+        cfg.sample_rate(),
+        ch,
+        cfg.sample_format()
+    );
+    Some((mixer, stream))
 }
 
 #[cfg(feature = "wireless")]
@@ -176,13 +256,25 @@ impl android_auto::AndroidAutoAudioOutputTrait for AndroidAuto {
             .collect();
         match t {
             android_auto::AudioChannelType::Media => {
-                s.media_stream.as_mut().map(|m| m.0.push_slice(&r2));
+                if let Some(m) = s.media_stream.as_mut() {
+                    m.0.push_slice(&r2);
+                } else if let Some(mx) = &s.mixer {
+                    mx.push(&data, 48000, 2);
+                }
             }
             android_auto::AudioChannelType::System => {
-                s.sys_stream.as_mut().map(|m| m.0.push_slice(&r2));
+                if let Some(m) = s.sys_stream.as_mut() {
+                    m.0.push_slice(&r2);
+                } else if let Some(mx) = &s.mixer {
+                    mx.push(&data, 16000, 1);
+                }
             }
             android_auto::AudioChannelType::Speech => {
-                s.speech_stream.as_mut().map(|m| m.0.push_slice(&r2));
+                if let Some(m) = s.speech_stream.as_mut() {
+                    m.0.push_slice(&r2);
+                } else if let Some(mx) = &s.mixer {
+                    mx.push(&data, 16000, 1);
+                }
             }
         }
     }
@@ -233,19 +325,57 @@ impl android_auto::AndroidAutoInputChannelTrait for AndroidAuto {
 #[async_trait::async_trait]
 impl android_auto::AndroidAutoAudioInputTrait for AndroidAuto {
     async fn open_input_channel(&self) -> Result<(), ()> {
-        log::error!("Start audio input channel");
+        // The phone expects 16 kHz mono i16. Asking the device for that format directly fails
+        // on platforms that only expose their native rate (CoreAudio), so capture in the
+        // device's default format and convert here: channels averaged to mono, linear
+        // interpolation to 16 kHz, delivered in 20 ms frames.
         let mut s = self.inner.lock().await;
-        let config = cpal::StreamConfig {
-            channels: 1,
-            sample_rate: 16000,
-            buffer_size: cpal::BufferSize::Default,
+        let Some(ai) = &s.audio_input else {
+            log::error!("No audio input device");
+            return Ok(());
         };
-        if let Some(ai) = &s.audio_input {
-            let android_send = s.android_send.clone();
-            if let Ok(str) = ai.build_input_stream(
-                &config,
-                move |data: &[i16], _| {
-                    let bytes: Vec<u8> = data.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let cfg = match ai.default_input_config() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("No default input config: {e}");
+                return Ok(());
+            }
+        };
+        let src_rate = cfg.sample_rate();
+        let src_ch = cfg.channels() as usize;
+        log::info!(
+            "Audio input opened at {src_rate} Hz, {src_ch} channels, {:?}",
+            cfg.sample_format()
+        );
+        let android_send = s.android_send.clone();
+        let mut pending: Vec<i16> = Vec::new();
+        let mut phase = 0f64;
+        let step = src_rate as f64 / 16000.0;
+        match ai.build_input_stream(
+            &cfg.config(),
+            move |data: &[f32], _| {
+                let n = data.len() / src_ch;
+                let mono = |i: usize| -> f32 {
+                    let mut a = 0f32;
+                    for c in 0..src_ch {
+                        a += data[i * src_ch + c];
+                    }
+                    a / src_ch as f32
+                };
+                while (phase as usize) + 1 < n {
+                    let i0 = phase as usize;
+                    let t = (phase - i0 as f64) as f32;
+                    let v = mono(i0) * (1.0 - t) + mono(i0 + 1) * t;
+                    pending.push((v.clamp(-1.0, 1.0) * 32767.0) as i16);
+                    phase += step;
+                }
+                phase -= n as f64;
+                if phase < 0.0 {
+                    phase = 0.0;
+                }
+                while pending.len() >= 320 {
+                    let frame: Vec<i16> = pending.drain(..320).collect();
+                    let bytes: Vec<u8> = frame.iter().flat_map(|s| s.to_le_bytes()).collect();
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
@@ -254,15 +384,16 @@ impl android_auto::AndroidAutoAudioInputTrait for AndroidAuto {
                     if let Err(e) = android_send.try_send(msg.sendable()) {
                         log::warn!("Dropped audio input frame: {:?}", e);
                     }
-                },
-                |err| log::error!("Audio input error: {:?}", err),
-                None,
-            ) {
-                let _ = str.play();
-                s.input_stream = Some(str);
-            } else {
-                log::error!("Failed to open input channel stream");
+                }
+            },
+            |err| log::error!("Audio input error: {:?}", err),
+            None,
+        ) {
+            Ok(stream) => {
+                let _ = stream.play();
+                s.input_stream = Some(stream);
             }
+            Err(e) => log::error!("Failed to open input stream: {e}"),
         }
         Ok(())
     }
@@ -490,6 +621,26 @@ impl AndroidAuto {
             }
             (ai, media_stream, sys_stream, speech_stream)
         };
+        let (mixer, mixer_stream) = if media_stream.is_none()
+            || sys_stream.is_none()
+            || speech_stream.is_none()
+        {
+            match cpal::default_host()
+                .default_output_device()
+                .and_then(|d| open_fallback_output(&d))
+            {
+                Some((m, st)) => {
+                    let _ = st.play();
+                    (Some(m), Some(st))
+                }
+                None => {
+                    log::warn!("No output stream could be opened; phone audio will be discarded");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
         Self {
             inner: Arc::new(Mutex::new(AndroidAutoInner {
                 relay: Some(relay),
@@ -502,6 +653,8 @@ impl AndroidAuto {
                 sys_stream,
                 speech_stream,
                 input_stream: None,
+                mixer,
+                mixer_stream,
             })),
             #[cfg(feature = "wireless")]
             bluetooth,
@@ -565,6 +718,9 @@ impl MyEguiApp {
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Frames arrive from the phone whether or not the user touches anything; without a
+        // scheduled repaint they are only consumed on input events and the window looks hung.
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
         let mut replace_container = false;
         if let Some(con) = &mut self.container {
             while let Ok(v) = con.recv.try_recv() {
