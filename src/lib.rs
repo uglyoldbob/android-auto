@@ -140,6 +140,8 @@ pub enum FrameIoError {
     IncompatibleVersion(u16, u16),
     /// An error occurred during the ssl handshake
     SslHandshake(String),
+    /// The ssl session ended with an error after the handshake
+    SslSession(String),
     /// A logical error due to frames not being received in the expected order
     Sequence(FrameSequenceError),
     /// An error occurred opening the audio input channel
@@ -1883,7 +1885,7 @@ async fn do_android_auto_loop<T: AndroidAutoMainTrait + ?Sized>(
                 }
                 SslThreadResponse::ExitError(e) => {
                     log::error!("The error for exit is {}", e);
-                    todo!();
+                    return Err(ClientError::IoError(FrameIoError::SslSession(e)));
                 }
             }
         }
