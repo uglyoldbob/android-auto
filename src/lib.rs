@@ -1901,8 +1901,7 @@ async fn watch_for_disconnect(device_address: Arc<nusb::DeviceInfo>) {
                 if let Ok(mut devs) = devs {
                     if devs
                         .find(|a| {
-                            a.busnum() == device_address.busnum()
-                                && a.device_address() == device_address.device_address()
+                            a.id() == device_address.id()
                         })
                         .is_none()
                     {
