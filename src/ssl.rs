@@ -198,6 +198,45 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
     }
 }
 
+/// Reads frames from the transport until it fails, routing encrypted frames to the ssl thread
+/// and plain frames straight to the consumer.
+///
+/// A read error ends the pump. nusb keeps a failed transfer's error in its read buffer, so once
+/// the device is unplugged every later read returns that same error without waiting; retrying
+/// it spins a core forever and keeps the ssl thread alive through the senders held here.
+async fn pump_frames<T: AsyncRead + Unpin>(
+    mut read: T,
+    chan_ssl: tokio::sync::mpsc::Sender<SslThreadData>,
+    chanw: tokio::sync::mpsc::UnboundedSender<SslThreadResponse>,
+) {
+    let mut fr = AndroidAutoFrameReceiver::new();
+    loop {
+        let mut fhr = FrameHeaderReceiver::new();
+        let result = match fhr.read(&mut read).await {
+            Ok(Some(fh)) => fr.read(&fh, &mut read).await,
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(Some(f)) => {
+                if f.header.frame.get_encryption() {
+                    if chan_ssl.send(SslThreadData::DecryptMe(f)).await.is_err() {
+                        return;
+                    }
+                } else if chanw.send(SslThreadResponse::Data(f)).is_err() {
+                    return;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log::error!("Error reading frame: {:?}", e);
+                let _ = chanw.send(SslThreadResponse::ExitError(format!("read error {:?}", e)));
+                return;
+            }
+        }
+    }
+}
+
 pub struct StreamMux {
     send: tokio::sync::mpsc::Sender<SslThreadData>,
     recv: tokio::sync::mpsc::UnboundedReceiver<SslThreadResponse>,
@@ -266,21 +305,7 @@ impl StreamMux {
         let stream = SslStreamThread::new(chan.1, chan2.0, conn, write);
         tokio::spawn(stream.run());
         let chan_ssl = chan.0.clone();
-        tokio::spawn(async move {
-            let mut fr = AndroidAutoFrameReceiver::new();
-            loop {
-                let mut fhr = FrameHeaderReceiver::new();
-                if let Ok(Some(fh)) = fhr.read(&mut read).await {
-                    if let Ok(Some(f)) = fr.read(&fh, &mut read).await {
-                        if f.header.frame.get_encryption() {
-                            chan_ssl.send(SslThreadData::DecryptMe(f)).await;
-                        } else {
-                            let _ = chanw.send(SslThreadResponse::Data(f));
-                        }
-                    }
-                }
-            }
-        });
+        tokio::spawn(pump_frames(read, chan_ssl, chanw));
         Self {
             send: chan.0,
             recv: chan2.1,
@@ -289,5 +314,55 @@ impl StreamMux {
 
     pub fn split(self) -> (ReadHalf, WriteHalf) {
         (ReadHalf { recv: self.recv }, WriteHalf { send: self.send })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fails every read immediately, as nusb's `EndpointRead` does once the device is gone.
+    struct UnpluggedEndpoint {
+        reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl AsyncRead for UnpluggedEndpoint {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::task::Poll::Ready(Err(std::io::Error::other("device disconnected")))
+        }
+    }
+
+    #[test]
+    fn pump_ends_the_session_when_the_transport_fails() {
+        // Built by hand so a pump that never yields cannot hang the test in runtime shutdown.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let endpoint = UnpluggedEndpoint {
+            reads: reads.clone(),
+        };
+        let (ssl_tx, _ssl_rx) = tokio::sync::mpsc::channel(1);
+        let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel();
+        let outcome = rt.block_on(async move {
+            let pump = tokio::spawn(pump_frames(endpoint, ssl_tx, resp_tx));
+            let ended = tokio::time::timeout(std::time::Duration::from_secs(2), pump).await;
+            (ended.is_ok(), resp_rx.try_recv())
+        });
+        rt.shutdown_background();
+        let reads = reads.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(outcome.0, "pump still running after {reads} failed reads");
+        assert_eq!(reads, 1, "pump retried a failed transport");
+        assert!(
+            matches!(outcome.1, Ok(SslThreadResponse::ExitError(_))),
+            "consumer was not told the session ended"
+        );
     }
 }
