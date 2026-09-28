@@ -1057,10 +1057,9 @@ impl AndroidAutoFrame {
         ssl_stream: &mut rustls::client::ClientConnection,
     ) -> Result<(), FrameReceiptError> {
         if self.header.frame.get_encryption() {
-            let tls_len = u16::from_be_bytes([self.data[3], self.data[4]]);
-            let mut plain_data = vec![0u8; self.data.len()];
+            let mut plain_data = Vec::with_capacity(self.data.len());
+            let mut chunk = vec![0u8; self.data.len().max(1024)];
             let mut cursor = Cursor::new(&self.data);
-            let mut index = 0;
             loop {
                 let n = ssl_stream
                     .read_tls(&mut cursor)
@@ -1068,27 +1067,21 @@ impl AndroidAutoFrame {
                 if n == 0 {
                     break;
                 }
-                let pnp = ssl_stream
+                ssl_stream
                     .process_new_packets()
                     .map_err(FrameReceiptError::TlsProcessingError)?;
-
                 loop {
-                    let amount = pnp.plaintext_bytes_to_read();
-                    if amount > 0 {
-                        match ssl_stream.reader().read(&mut plain_data[index..]) {
-                            Ok(0) => break, // EOF for now
-                            Ok(n) => index += n,
-                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                            Err(e) => return Err(FrameReceiptError::TlsReadError(e)),
-                        }
-                    } else {
-                        break;
+                    match ssl_stream.reader().read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => plain_data.extend_from_slice(&chunk[..n]),
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                        Err(e) => return Err(FrameReceiptError::TlsReadError(e)),
                     }
                 }
             }
             self.header.frame.set_encryption(false);
-            self.data = plain_data[0..index].to_vec();
+            self.data = plain_data;
         }
         Ok(())
     }
@@ -1141,27 +1134,22 @@ pub enum SslError {
     MissingStream,
 }
 
-/// Responsible for receiving a full frame from the compatible android auto device
+/// Responsible for receiving one wire frame at a time from the compatible android auto device.
+///
+/// Fragments are returned as they arrive, not combined. The phone encrypts every fragment
+/// separately and may send frames for other channels between the fragments of a message, so
+/// frames must be decrypted in arrival order (TLS records carry an implicit sequence number)
+/// and only then reassembled, per channel, by [`FrameAssembler`]. Holding fragments here and
+/// decrypting a later single frame first fails the whole session with `DecryptError`.
 struct AndroidAutoFrameReceiver {
-    /// Length received so far
-    chunk_length: Vec<u8>,
     /// The length of the frame to receive, if it is known yet
     len: Option<u16>,
-    /// The data for the current frame
-    current_frame: Vec<u8>,
-    /// The data received so far for a multi-frame packet
-    rx_sofar: Vec<Vec<u8>>,
 }
 
 impl AndroidAutoFrameReceiver {
     /// Construct a new frame receiver
     fn new() -> Self {
-        Self {
-            chunk_length: Vec::new(),
-            len: None,
-            current_frame: Vec::new(),
-            rx_sofar: Vec::new(),
-        }
+        Self { len: None }
     }
 
     async fn read<T: tokio::io::AsyncRead + Unpin>(
@@ -1170,70 +1158,92 @@ impl AndroidAutoFrameReceiver {
         stream: &mut T,
     ) -> Result<Option<AndroidAutoFrame>, FrameReceiptError> {
         if self.len.is_none() {
-            if header.frame.get_frame_type() == FrameHeaderType::First {
-                let mut p = [0u8; 6];
-                stream
-                    .read_exact(&mut p)
-                    .await
-                    .map_err(|e| match e.kind() {
-                        std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                        std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                        _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
-                    })?;
-                let len = u16::from_be_bytes([p[0], p[1]]);
-                self.len.replace(len);
+            let mut p = [0u8; 6];
+            // A first fragment also carries the 4-byte total length of the message.
+            let n = if header.frame.get_frame_type() == FrameHeaderType::First {
+                6
             } else {
-                let mut p = [0u8; 2];
-                stream
-                    .read_exact(&mut p)
-                    .await
-                    .map_err(|e| match e.kind() {
-                        std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
-                        std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
-                        _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
-                    })?;
-                let len = u16::from_be_bytes(p);
-                self.len.replace(len);
-            }
+                2
+            };
+            stream
+                .read_exact(&mut p[..n])
+                .await
+                .map_err(|e| match e.kind() {
+                    std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
+                    std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
+                    _ => FrameReceiptError::UnexpectedDuringFrameLength(e),
+                })?;
+            self.len.replace(u16::from_be_bytes([p[0], p[1]]));
         }
 
-        if let Some(len) = &self.len {
-            let mut data_frame = vec![0u8; *len as usize];
+        if let Some(len) = self.len.take() {
+            let mut data = vec![0u8; len as usize];
             stream
-                .read_exact(&mut data_frame)
+                .read_exact(&mut data)
                 .await
                 .map_err(|e| match e.kind() {
                     std::io::ErrorKind::TimedOut => FrameReceiptError::TimeoutHeader,
                     std::io::ErrorKind::UnexpectedEof => FrameReceiptError::Disconnected,
                     _ => FrameReceiptError::UnexpectedDuringFrameContents(e),
                 })?;
-            let data = if header.frame.get_frame_type() == FrameHeaderType::Single {
-                let d = data_frame.clone();
-                self.len.take();
-                Some(vec![d])
-            } else {
-                self.rx_sofar.push(data_frame);
-                if header.frame.get_frame_type() == FrameHeaderType::Last {
-                    let d = self.rx_sofar.clone();
-                    self.rx_sofar.clear();
-                    self.len.take();
-                    Some(d)
-                } else {
-                    self.len.take();
-                    None
-                }
-            };
-            if let Some(data) = data {
-                let data: Vec<u8> = data.into_iter().flatten().collect();
-                let f = AndroidAutoFrame {
-                    header: *header,
-                    data,
-                };
-                let f = Some(f);
-                return Ok(f);
-            }
+            return Ok(Some(AndroidAutoFrame {
+                header: *header,
+                data,
+            }));
         }
         Ok(None)
+    }
+}
+
+/// Combines the fragments of multi-frame messages, keeping each channel's message separate,
+/// since fragments of different channels can arrive interleaved.
+struct FrameAssembler {
+    /// Fragments received so far, per channel
+    partial: std::collections::HashMap<ChannelId, Vec<u8>>,
+}
+
+impl FrameAssembler {
+    /// Construct a new assembler
+    fn new() -> Self {
+        Self {
+            partial: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Accept one (already decrypted, if it was encrypted) wire frame, returning a complete
+    /// message when this frame finishes one. The returned frame carries the header of the
+    /// frame that completed it.
+    fn push(&mut self, f: AndroidAutoFrame) -> Option<AndroidAutoFrame> {
+        let ch = f.header.channel_id;
+        match f.header.frame.get_frame_type() {
+            FrameHeaderType::Single => Some(f),
+            FrameHeaderType::First => {
+                if self.partial.insert(ch, f.data).is_some() {
+                    log::error!("Channel {ch}: new message started before the last one ended");
+                }
+                None
+            }
+            FrameHeaderType::Middle => {
+                match self.partial.get_mut(&ch) {
+                    Some(d) => d.extend_from_slice(&f.data),
+                    None => log::error!("Channel {ch}: middle fragment with no first, dropped"),
+                }
+                None
+            }
+            FrameHeaderType::Last => match self.partial.remove(&ch) {
+                Some(mut d) => {
+                    d.extend_from_slice(&f.data);
+                    Some(AndroidAutoFrame {
+                        header: f.header,
+                        data: d,
+                    })
+                }
+                None => {
+                    log::error!("Channel {ch}: last fragment with no first, dropped");
+                    None
+                }
+            },
+        }
     }
 }
 
@@ -1901,12 +1911,7 @@ async fn watch_for_disconnect(device_address: Arc<nusb::DeviceInfo>) {
             nusb::hotplug::HotplugEvent::Disconnected(_info) => {
                 let devs = nusb::list_devices().await;
                 if let Ok(mut devs) = devs {
-                    if devs
-                        .find(|a| {
-                            a.id() == device_address.id()
-                        })
-                        .is_none()
-                    {
+                    if devs.find(|a| a.id() == device_address.id()).is_none() {
                         log::info!("Android Auto USB device disconnected");
                         break;
                     }

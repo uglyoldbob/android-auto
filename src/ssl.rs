@@ -3,8 +3,8 @@
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    AndroidAutoControlMessage, AndroidAutoFrame, AndroidAutoFrameReceiver, FrameHeaderReceiver,
-    FrameReceiptError, FrameTransmissionError, SendableAndroidAutoMessage,
+    AndroidAutoControlMessage, AndroidAutoFrame, AndroidAutoFrameReceiver, FrameAssembler,
+    FrameHeaderReceiver, FrameReceiptError, FrameTransmissionError, SendableAndroidAutoMessage,
 };
 
 /// A message sent to the ssl thread
@@ -38,6 +38,8 @@ struct SslStreamThread<U: AsyncWrite + Unpin> {
     hs: Option<tokio::sync::mpsc::Receiver<SslThreadData>>,
     dout: tokio::sync::mpsc::UnboundedSender<SslThreadResponse>,
     write: U,
+    /// Reassembles decrypted fragments, per channel
+    assembler: FrameAssembler,
 }
 
 impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
@@ -54,6 +56,7 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
             hs: Some(rcv),
             dout,
             write,
+            assembler: FrameAssembler::new(),
         }
     }
 
@@ -64,7 +67,9 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
                     log::error!("Error receiving frame: {:?}", e);
                     return Err(format!("frame error {:?}", e));
                 }
-                let _ = self.dout.send(SslThreadResponse::Data(data));
+                if let Some(f) = self.assembler.push(data) {
+                    let _ = self.dout.send(SslThreadResponse::Data(f));
+                }
             }
             SslThreadData::HandshakeStart => {
                 if self.hs_started {
@@ -184,9 +189,7 @@ impl<U: AsyncWrite + Unpin> SslStreamThread<U> {
             match hs.recv().await {
                 Some(m) => {
                     if let Err(e) = self.handle_receive(m).await {
-                        let _ = self
-                            .dout
-                            .send(SslThreadResponse::ExitError(e.to_string()));
+                        let _ = self.dout.send(SslThreadResponse::ExitError(e.to_string()));
                         return Err(e);
                     }
                 }
@@ -268,13 +271,14 @@ impl StreamMux {
         let chan_ssl = chan.0.clone();
         tokio::spawn(async move {
             let mut fr = AndroidAutoFrameReceiver::new();
+            let mut plain = FrameAssembler::new();
             loop {
                 let mut fhr = FrameHeaderReceiver::new();
                 if let Ok(Some(fh)) = fhr.read(&mut read).await {
                     if let Ok(Some(f)) = fr.read(&fh, &mut read).await {
                         if f.header.frame.get_encryption() {
                             chan_ssl.send(SslThreadData::DecryptMe(f)).await;
-                        } else {
+                        } else if let Some(f) = plain.push(f) {
                             let _ = chanw.send(SslThreadResponse::Data(f));
                         }
                     }
@@ -289,5 +293,197 @@ impl StreamMux {
 
     pub fn split(self) -> (ReadHalf, WriteHalf) {
         (ReadHalf { recv: self.recv }, WriteHalf { send: self.send })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct AcceptAll;
+
+    impl rustls::client::danger::ServerCertVerifier for AcceptAll {
+        fn verify_server_cert(
+            &self,
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &[rustls::pki_types::CertificateDer<'_>],
+            _: &rustls::pki_types::ServerName<'_>,
+            _: &[u8],
+            _: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _: &[u8],
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _: &[u8],
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    /// A handshaken client (the head unit) and server (standing in for the phone), in memory.
+    fn tls_pair() -> (rustls::ClientConnection, rustls::ServerConnection) {
+        use rustls::pki_types::pem::PemObject;
+        let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+        let cert =
+            rustls::pki_types::CertificateDer::from_pem_slice(crate::cert::CERTIFICATE.as_bytes())
+                .unwrap();
+        let key =
+            rustls::pki_types::PrivateKeyDer::from_pem_slice(crate::cert::PRIVATE_KEY.as_bytes())
+                .unwrap();
+        let scfg = rustls::ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        let ccfg = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAll))
+            .with_no_client_auth();
+        let mut c = rustls::ClientConnection::new(
+            std::sync::Arc::new(ccfg),
+            "idontknow.com".try_into().unwrap(),
+        )
+        .unwrap();
+        let mut s = rustls::ServerConnection::new(std::sync::Arc::new(scfg)).unwrap();
+        for _ in 0..10 {
+            let mut buf = Vec::new();
+            c.write_tls(&mut buf).unwrap();
+            s.read_tls(&mut &buf[..]).unwrap();
+            s.process_new_packets().unwrap();
+            let mut buf = Vec::new();
+            s.write_tls(&mut buf).unwrap();
+            c.read_tls(&mut &buf[..]).unwrap();
+            c.process_new_packets().unwrap();
+            if !c.is_handshaking() && !s.is_handshaking() {
+                return (c, s);
+            }
+        }
+        panic!("handshake did not complete");
+    }
+
+    /// One wire frame as the phone sends it: each fragment's payload is its own TLS output.
+    fn wire_frame(
+        s: &mut rustls::ServerConnection,
+        ch: u8,
+        ftype: u8,
+        total: u32,
+        plain: &[u8],
+    ) -> Vec<u8> {
+        use std::io::Write;
+        s.writer().write_all(plain).unwrap();
+        let mut ct = Vec::new();
+        s.write_tls(&mut ct).unwrap();
+        let mut f = vec![ch, 0x08 | ftype];
+        f.extend_from_slice(&(ct.len() as u16).to_be_bytes());
+        if ftype == 1 {
+            f.extend_from_slice(&total.to_be_bytes());
+        }
+        f.extend_from_slice(&ct);
+        f
+    }
+
+    #[test]
+    fn a_frame_from_another_channel_inside_a_multi_frame_message_decrypts() {
+        // Seen on the desk 2026-09-26: a 35-byte mic ack on channel 7 arrived between the
+        // First and Last fragments of a video message on channel 3, and the next decrypt
+        // failed with DecryptError, ending the session. TLS records carry an implicit
+        // sequence number, so they must reach rustls in the order they arrived.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (client, mut server) = tls_pair();
+        let video_a = vec![0xAAu8; 3000];
+        let video_b = vec![0xBBu8; 1200];
+        let ack = vec![0x07u8; 12];
+        let total = (video_a.len() + video_b.len()) as u32;
+        let mut wire = Vec::new();
+        wire.extend(wire_frame(&mut server, 3, 1, total, &video_a));
+        wire.extend(wire_frame(&mut server, 7, 3, 0, &ack));
+        wire.extend(wire_frame(&mut server, 3, 2, 0, &video_b));
+        let got = rt.block_on(async move {
+            use tokio::io::AsyncWriteExt;
+            // A pipe that stays open, as a connected device does: no end-of-file to handle.
+            let (mut phone, hu_read) = tokio::io::duplex(1 << 20);
+            phone.write_all(&wire).await.unwrap();
+            let (mut rx, _tx) = StreamMux::new(client, tokio::io::sink(), hu_read).split();
+            let mut frames = Vec::new();
+            let mut exits = Vec::new();
+            while let Ok(Some(r)) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+            {
+                match r {
+                    SslThreadResponse::Data(f) => frames.push((f.header.channel_id, f.data)),
+                    SslThreadResponse::ExitError(e) => exits.push(e),
+                    SslThreadResponse::HandshakeComplete => {}
+                }
+            }
+            drop(phone);
+            (frames, exits)
+        });
+        rt.shutdown_background();
+        let (frames, exits) = got;
+        assert!(
+            !exits.iter().any(|e| e.contains("frame error")),
+            "session ended on a decrypt: {exits:?}"
+        );
+        let mut video = video_a.clone();
+        video.extend(&video_b);
+        assert_eq!(
+            frames.len(),
+            2,
+            "expected the ack and the reassembled video"
+        );
+        assert!(frames.contains(&(7, ack)), "mic ack lost or corrupted");
+        assert!(
+            frames.contains(&(3, video)),
+            "video message lost or corrupted"
+        );
+    }
+
+    fn plain(ch: u8, ftype: crate::FrameHeaderType, data: &[u8]) -> AndroidAutoFrame {
+        let mut h = crate::FrameHeader {
+            channel_id: ch,
+            frame: crate::FrameHeaderContents::new(false, crate::FrameHeaderType::Single, false),
+        };
+        h.frame.set_frame_type(ftype);
+        AndroidAutoFrame {
+            header: h,
+            data: data.to_vec(),
+        }
+    }
+
+    #[test]
+    fn interleaved_multi_frame_messages_on_two_channels_stay_separate() {
+        use crate::FrameHeaderType::*;
+        let mut a = FrameAssembler::new();
+        assert!(a.push(plain(3, First, b"v1")).is_none());
+        assert!(a.push(plain(5, First, b"s1")).is_none());
+        assert!(a.push(plain(3, Middle, b"v2")).is_none());
+        let s = a.push(plain(5, Last, b"s2")).expect("speech message");
+        assert_eq!((s.header.channel_id, s.data), (5, b"s1s2".to_vec()));
+        let v = a.push(plain(3, Last, b"v3")).expect("video message");
+        assert_eq!((v.header.channel_id, v.data), (3, b"v1v2v3".to_vec()));
     }
 }
